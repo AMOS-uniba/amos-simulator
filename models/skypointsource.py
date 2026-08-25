@@ -8,7 +8,7 @@ import numpy as np
 from typing import TextIO, Any
 
 import astropy.units as u
-from amosutils.projections import Projection
+from demeteor.projections import Projection
 from astropy.coordinates import Angle
 from astropy.time import Time
 from astropy.units import Quantity
@@ -27,13 +27,18 @@ class SkyPointSource:
     or extrapolated (in which case the brightness is assumed to be zero).
     """
 
+    # `time` either way round. as_dict() writes time.iso, a string, so a file this class wrote
+    # comes back as a string and a schema demanding a datetime rejects it -- which is what stopped
+    # the renderer from reading anything the observer produced. Unquoted in the YAML it would be a
+    # datetime instead, and astropy's Time takes either, so both are allowed rather than one
+    # being converted on the way past.
     _schema = Schema({
         int: {
             'alt': float,
             'az': float,
             'dist': float,
             'i': float,
-            'time': datetime.datetime,
+            'time': lambda value: isinstance(value, (str, datetime.datetime)),
         }
     })
 

@@ -4,7 +4,7 @@ from abc import abstractmethod
 
 from typing import Union, Optional
 
-from amosutils.metrics import spherical
+from demeteor.metrics import spherical
 from numpy.typing import ArrayLike
 
 from astropy.coordinates import EarthLocation, get_body, AltAz

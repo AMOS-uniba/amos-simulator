@@ -3,8 +3,8 @@ from typing import Callable
 
 import matplotlib as mpl
 import numpy as np
-from amosutils.catalogue import Catalogue
-from amosutils.projections.shifters import ScalingShifter
+from demeteor.catalogue import Catalogue
+from demeteor.projections.shifters import ScalingShifter
 from numpy.typing import ArrayLike
 from PIL import Image
 
@@ -12,7 +12,7 @@ import astropy.units as u
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
-from amosutils.projections import BorovickaProjection, Projection
+from demeteor.projections import BorovickaProjection, Projection
 
 from effects.sky import SkySource, Sunlight, Airglow, Moonlight, Extinction
 from models.skypointsource import SkyPointSource
