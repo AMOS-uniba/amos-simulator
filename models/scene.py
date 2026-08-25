@@ -81,7 +81,12 @@ class Scene:
         self.catalogue.mask = mask
         altaz = altaz[mask]
 
-        ints = self.vmag_to_intensity(self.catalogue.vmag(self.location, masked=True))
+        # The time, and not just the location. Catalogue.vmag() rebuilds the planets from scratch
+        # -- positions and brightnesses both -- and with no time it rebuilds them for whenever this
+        # happens to be running: seven bodies whose alt-az was computed for the simulated epoch two
+        # lines above, given the magnitude they have today. Mars alone runs from -2.9 to +1.8, a
+        # factor of a hundred in flux.
+        ints = self.vmag_to_intensity(self.catalogue.vmag(self.location, self.time, masked=True))
         self.add_points(altaz.alt, altaz.az, ints)
 
     def add_sky_effects(self,
