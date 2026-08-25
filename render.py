@@ -124,4 +124,9 @@ def render(xres: int, yres: int,
     return 1
 
 
-simulator = MeteorRenderer().run()
+# Behind the guard, and it has to be. Python 3.14 starts subprocesses with forkserver rather than
+# fork on Linux, so a Pool worker imports this module rather than inheriting a copy of it -- and an
+# unguarded run() at module scope means every worker starts its own renderer, which comes back as
+# a ConnectionResetError out of forkserver's handshake. Under fork it happened to work.
+if __name__ == '__main__':
+    simulator = MeteorRenderer().run()

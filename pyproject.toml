@@ -1,32 +1,26 @@
 [project]
 name = "vamos"
-version = "0.1.1"
+version = "0.1.0"
 description = "Virtual All-sky Meteor Observation Simulator"
-requires-python = ">=3.12"
-# Everything from PyPI. The Pipfile this replaces installed amosutils and scalyca as editable
-# local paths, and amosutils has since been renamed demeteor and its directory emptied -- so vamos
-# could not be installed at all, let alone run.
+requires-python = ">=3.14"
 dependencies = [
-    "argparsedirs>=0.2.1",
-    "astropy>=7.0",
-    "demeteor>=0.2.2",      # was amosutils: the projections, the catalogue and the metrics
+    "argparsedirs>=0.2.1",  # was undeclared: render.py uses it for its output directory
+    "astropy>=8.0.1",
+    "demeteor>=0.2.4",      # was amosutils, which this is the renamed continuation of
     "demetria>=0.1.0",      # 2D fields, and the Zernike polynomials a distortion is built from
-    "dotmap>=1.3.30",
+    "dotmap>=1.3.30",       # was undeclared: render.py reads the camera config through one
     "enschema>=0.1.5",
-    "matplotlib>=3.9",
-    "numpy>=2.0",
-    "pandas>=2.2",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.1",
+    "pandas>=3.0.5",
     "pillow>=10.0",         # was undeclared: render.py and frame.py both `from PIL import Image`
-    "ruamel-yaml>=0.19.1",  # YAML 1.2, as the rest of the ecosystem now reads
+    "pyyaml>=6.0.3",
     "scalyca>=0.2.7",
-    "scipy>=1.14",
+    "scipy>=1.18.0",
 ]
 
 [dependency-groups]
 dev = [
-    "ipython",
-    "pytest>=8.0",
+    "ipython>=9.15.0",
+    "pytest>=9.1.1",
 ]
-
-[tool.ruff]
-line-length = 120
