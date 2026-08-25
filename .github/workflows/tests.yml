@@ -1,0 +1,51 @@
+# There are no tests here yet, so this checks the two things that have actually broken vamos: a
+# dependency that was used but never declared -- argparsedirs, dotmap and pillow all were -- and a
+# file that does not compile. Both are caught by installing from the lockfile and then importing
+# every package, which is more than it sounds: the failures were all ImportErrors at startup.
+#
+# When there are tests, add a step; the install above is already what they would need.
+name: checks
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      # --locked fails on a lockfile that disagrees with pyproject.toml. uv fetches 3.14 itself.
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Compile everything
+        run: uv run --no-sync python -m compileall -q . -x '(\.venv|output|__pycache__)'
+
+      # The packages only. simulate.py and observe.py are scalyca applications that run at import --
+      # no `if __name__ == '__main__'` -- so importing them would parse argv and exit, and there is
+      # nothing to gain by importing a script whose modules are already covered here.
+      - name: Import the packages
+        run: uv run --no-sync python -c "import models, effects, sky, frame, render"
+
+      # F82 -- undefined names -- is *not* in the blocking set here, and that is not because it does
+      # not matter. There are 31 of them, and they are real: frame.py uses np without importing
+      # numpy, effects/detector.py subclasses an Effect it never imported. They sit in code paths
+      # nothing calls yet, so importing the packages above does not reach them. They belong in a
+      # commit of their own; until then they are in the advisory pass, where they are visible.
+      - name: Lint for the errors that stop it running at all
+        run: uvx ruff check --select=E9,F63,F7 .
+
+      - name: Lint for everything else, without failing
+        run: uvx ruff check --output-format=github --exit-zero .
