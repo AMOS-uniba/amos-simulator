@@ -33,11 +33,11 @@ jobs:
       - name: Compile everything
         run: uv run --no-sync python -m compileall -q . -x '(\.venv|output|__pycache__)'
 
-      # The packages only. simulate.py and observe.py are scalyca applications that run at import --
-      # no `if __name__ == '__main__'` -- so importing them would parse argv and exit, and there is
-      # nothing to gain by importing a script whose modules are already covered here.
-      - name: Import the packages
-        run: uv run --no-sync python -c "import models, effects, sky, frame, render"
+      # The three applications as well as the packages, which is possible because all three are
+      # behind an `if __name__ == '__main__'` now. Importing one used to run it: it would parse this
+      # step's argv, find no config, and exit.
+      - name: Import everything
+        run: uv run --no-sync python -c "import models, effects, sky, frame, render, simulate, observe"
 
       # F82 -- undefined names -- is *not* in the blocking set here, and that is not because it does
       # not matter. There are 31 of them, and they are real: frame.py uses np without importing

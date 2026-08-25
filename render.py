@@ -129,4 +129,4 @@ def render(xres: int, yres: int,
 # unguarded run() at module scope means every worker starts its own renderer, which comes back as
 # a ConnectionResetError out of forkserver's handshake. Under fork it happened to work.
 if __name__ == '__main__':
-    simulator = MeteorRenderer().run()
+    MeteorRenderer().run()

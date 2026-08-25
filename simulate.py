@@ -57,6 +57,8 @@ def simulate(
     ):
     pool = Pool(self.config.cores)
 
-
-
-simulator = MeteorSimulatorCLI().run()
+# An application that runs at module scope runs on any import -- a test collecting it, a tool
+# reading it, something reaching for one of its classes -- and what it does then is parse whatever
+# argv that process happens to have and exit. See render.py for where that actually bit.
+if __name__ == '__main__':
+    MeteorSimulatorCLI().run()

@@ -160,4 +160,8 @@ class MeteorObserverCLI(Scalyca):
                          xml_declaration=False, pretty_print=True,
                          attr_cols=['fno', 'b', 'bm', 'Lsum', 'mag', 'mag_r', 'az', 'ev', 'az_r', 'ev_r', 'ra', 'dec'])
 
-observer_cli = MeteorObserverCLI().run()
+# An application that runs at module scope runs on any import -- a test collecting it, a tool
+# reading it, something reaching for one of its classes -- and what it does then is parse whatever
+# argv that process happens to have and exit. See render.py for where that actually bit.
+if __name__ == '__main__':
+    MeteorObserverCLI().run()
