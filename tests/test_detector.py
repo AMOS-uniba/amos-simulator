@@ -109,3 +109,53 @@ class TestSaturation:
         """
         d, _, _ = frame()
         assert d.gain / d.full_well * (d.saturation + 1) == pytest.approx(20.0, rel=1e-9)
+
+
+class TestAutomaticGain:
+    """
+    What lets a station work through twilight. No fixed gain covers both a dark sky and nautical
+    twilight -- two hundred to one across 255 counts -- so the tube is driven by a loop instead.
+    """
+    def auto(self, **kwargs):
+        d, xs, ys = frame(gain='auto', **kwargs)
+        return d, xs, ys
+
+    def electrons_for(self, detector, flux):
+        return np.full(SHAPE, detector.photoelectrons(flux))
+
+    def test_a_number_is_left_alone(self):
+        d, _, _ = frame(gain=1234.0)
+        assert not d.automatic
+        assert d.choose_gain(np.full(SHAPE, 5.0)) == 1234.0
+
+    def test_a_brighter_sky_is_met_with_less_gain(self):
+        d, _, _ = self.auto()
+        gains = [d.choose_gain(self.electrons_for(d, flux))
+                 for flux in (3.8e-12, 3.8e-11, 3.8e-10, 3.8e-9)]
+        assert gains == sorted(gains, reverse=True)
+
+    def test_it_aims_at_the_target(self):
+        """ The percentile of the frame it watches lands on the count it was asked for. """
+        d, xs, ys = self.auto(dark=0.0, read_noise=0.0, bias=0.0, excess_noise=1.0)
+        counts = d.readout(np.full(SHAPE, 3.8e-11), xs, ys)
+        assert np.percentile(counts, d.agc_percentile) == pytest.approx(d.agc_target, rel=0.2)
+
+    def test_and_stops_at_the_ends_of_the_tube(self):
+        d, _, _ = self.auto()
+        assert d.choose_gain(self.electrons_for(d, 1e-16)) == d.agc_max
+        assert d.choose_gain(self.electrons_for(d, 1e-4)) == d.agc_min
+
+    def test_an_empty_frame_gets_the_most_it_can(self):
+        d, _, _ = self.auto()
+        assert d.choose_gain(np.zeros(SHAPE)) == d.agc_max
+
+    def test_a_dark_sky_and_a_twilight_sky_both_come_out_usable(self):
+        """
+        The point of the whole thing: neither frame is white, and neither is empty. A fixed gain has
+        to give up one of them.
+        """
+        for flux in (3.8e-12, 7.6e-10):
+            d, xs, ys = self.auto()
+            counts = d.readout(np.full(SHAPE, flux), xs, ys)
+            assert (counts >= d.saturation).mean() < 0.02
+            assert np.median(counts) > 5

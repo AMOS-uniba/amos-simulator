@@ -48,10 +48,23 @@ detector:
   # the 255 counts, which puts a dark zenith sky near twenty-five and leaves a V=6 star visible above
   # it. Those are the numbers to turn when a rendered frame is to be matched against a real one.
   intensifier:
-    # Follows the exposure, so that changing one does not change the brightness: 400 went with a
-    # whole second, so three tenths of one wants 1333. That makes a photoelectron 2.7 of the 255
-    # counts here, against 20 in default.yaml. Raise it and the frame goes white from the rim in.
-    gain: 1333
+    # `auto`, because no fixed number can cover this run. At twelve degrees of solar depression the
+    # sunward horizon is two hundred times a dark sky and the anti-solar horizon still fifteen times,
+    # which does not fit in 255 counts alongside a usable night: a gain that suits the dark sky turns
+    # the first frame white, and one that survives the first frame leaves the night at 18 counts with
+    # 44% of that frame clipped anyway.
+    #
+    # A real intensified camera does not choose either -- the tube is driven by a loop that turns
+    # itself down as the sky brightens, which is how a station keeps working through twilight. Here
+    # that lands on gain 123 at -12 and 20000 by the middle of the night, and it runs out of range
+    # around -9, where a station really cannot observe. The frames are then *not* photometric: two of
+    # them an hour apart were taken at different gains. That is true of the hardware too, and it is
+    # why default.yaml pins the gain, the brightness of a meteor being the measurement there.
+    gain: auto
+    agc_target: 60            # counts at `agc_percentile` of the frame
+    agc_percentile: 90        # so a bright rim sets it, not a few saturated stars
+    agc_min: 50               # the range a tube can be driven over
+    agc_max: 20000
     excess_noise: 2.0
     glow: 20                # [e-/s/pixel] at the photocathode, at the centre of the field
     glow_radius: 70         # [pixels]
