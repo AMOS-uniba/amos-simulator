@@ -16,3 +16,18 @@ detector:
 padding:
   start: 0.5
   end: 0.5
+
+# What the atmosphere is like. `extinction` is magnitudes lost per air mass at the zenith in V --
+# 0.145 is a clear night at a few hundred metres; 0.25 is haze. It attenuates the stars and the
+# meteor, and it is also what dims the atmosphere's own light on its way out, so one number does
+# both jobs.
+sky:
+  extinction: 0.145
+  # The airglow layer: `intensity` is what it shines at the zenith, in the scene's flux units, and
+  # `height` is where it lives. 90 km is the mesopause, and the height sets how much brighter the
+  # horizon is than the zenith -- about six times the path, before extinction takes most of it back.
+  airglow:
+    intensity: 100
+    height: 90
+  moon: true
+  sun: true

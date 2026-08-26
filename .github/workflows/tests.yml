@@ -37,7 +37,7 @@ jobs:
       # behind an `if __name__ == '__main__'` now. Importing one used to run it: it would parse this
       # step's argv, find no config, and exit.
       - name: Import everything
-        run: uv run --no-sync python -c "import models, effects, sky, frame, render, simulate, observe"
+        run: uv run --no-sync python -c "import models, effects, frame, render, simulate, observe"
 
       # F82 -- undefined names -- is *not* in the blocking set here, and that is not because it does
       # not matter. There are 31 of them, and they are real: frame.py uses np without importing

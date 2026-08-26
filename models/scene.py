@@ -14,7 +14,8 @@ from astropy.time import Time
 
 from demeteor.projections import BorovickaProjection, Projection
 
-from effects.sky import SkySource, Sunlight, Airglow, Moonlight, Extinction
+from effects import airmass
+from effects.sky import Emission, Extinction, Sunlight, Airglow, Moonlight
 from models.skypointsource import SkyPointSource
 
 u.Wm2 = u.W / u.m**2
@@ -31,7 +32,11 @@ class Scene:
                  scaler: ScalingShifter,
                  location: EarthLocation,
                  catalogue: Catalogue,
-                 time: Time = None):
+                 time: Time = None,
+                 sky: dict = None):
+        # What the atmosphere is like tonight. A dict rather than a DotMap because this is handed to
+        # a Pool worker and has to pickle; `config/renderers/*.yaml` is where the numbers live.
+        self.sky = dict(sky or {})
         self.xres = xres
         self.yres = yres
         self.data = np.zeros(shape=(yres, xres))
@@ -56,15 +61,45 @@ class Scene:
         self._data = new_data
 
     def build(self, fragments: list[SkyPointSource]):
+        """
+        Fill the frame: what came through the atmosphere, then what the atmosphere added.
+
+        The order is the physics and is no longer a property of a list. Stars, planets and the meteor
+        arrived from outside, so they are summed and then dimmed together -- one column, one air mass
+        per pixel. Airglow, scattered moonlight and twilight are made inside it and are added after,
+        each carrying its own geometry.
+        """
         logging.info(f"Building a scene ({self.xres}x{self.yres}) at {self.time}")
 
-        sun = Sunlight(self.location, self.time)
-        moon = Moonlight(self.location, self.time)
-        airglow = Airglow(self.location, self.time, intensity=100)
-        extinction = Extinction(self.location, self.time)
         self.add_stars()
         self.add_fragments(fragments)
-        self.add_sky_effects([sun, moon, extinction, airglow])
+        self.attenuate()
+        self.add_emission()
+
+    def attenuate(self) -> None:
+        """ Dim everything gathered so far by the air it came through. """
+        extinction = Extinction(self.location, self.time,
+                                extinction=self.sky.get('extinction', airmass.EXTINCTION))
+        self.data = extinction(self.data, self.alt, self.az)
+
+    def emissions(self) -> list[Emission]:
+        """ The atmosphere's own light, as configured. Light pollution will join this list. """
+        k = self.sky.get('extinction', airmass.EXTINCTION)
+        glow = self.sky.get('airglow', {})
+        sources: list[Emission] = [
+            Airglow(self.location, self.time, extinction=k,
+                    intensity=glow.get('intensity', 0.0),
+                    height=glow.get('height', airmass.AIRGLOW_HEIGHT)),
+        ]
+        if self.sky.get('moon', True):
+            sources.append(Moonlight(self.location, self.time, extinction=k))
+        if self.sky.get('sun', True):
+            sources.append(Sunlight(self.location, self.time, extinction=k))
+        return sources
+
+    def add_emission(self) -> None:
+        for source in self.emissions():
+            self.data = source(self.data, self.alt, self.az)
 
     def render(self, filename = None):
         logging.info(f"Rendering the scene to file {filename} {self.data.T.shape}")
@@ -88,11 +123,6 @@ class Scene:
         # factor of a hundred in flux.
         ints = self.vmag_to_intensity(self.catalogue.vmag(self.location, self.time, masked=True))
         self.add_points(altaz.alt, altaz.az, ints)
-
-    def add_sky_effects(self,
-                        sources: list[SkySource]):
-        for source in sources:
-            self.data = source(self.data, self.alt, self.az)
 
     def add_fragments(self, fragments: list[SkyPointSource]):
         for fragment in fragments:

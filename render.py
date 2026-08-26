@@ -91,9 +91,12 @@ class MeteorRenderer(Scalyca):
         self.times = self.t0 + np.arange(-self.camera.padding.start / self.dt,
                                          self.config.count + 1 + self.camera.padding.end / self.dt) * self.dt
 
+        # .toDict() because a DotMap of the sky settings has to survive being pickled to a worker
+        sky = self.camera.sky.toDict() if 'sky' in self.camera else {}
         args = [(self.camera.detector.xres, self.camera.detector.yres,
                  self.projection, self.scaler,
-                 self.observer.location, self.catalogue, self.fragments, i, time, self.output_dir)
+                 self.observer.location, self.catalogue, self.fragments, i, time, self.output_dir,
+                 sky)
                 for i, time in enumerate(self.times)]
         pool = Pool(self.config.cores)
         log.info(f"Rendering {len(self.fragments)} fragment(s) at {len(self.times)} times "
@@ -108,12 +111,14 @@ def render(xres: int, yres: int,
            catalogue: Catalogue,
            fragments: list[SkyPointSource],
            i, timestamp: Time,
-           directory: Path) -> int:
+           directory: Path,
+           sky: dict) -> int:
 
     # This is needed so that noise is not generated using the same seed across workers
     np.random.seed((os.getpid() * int(time.time())) % 123456789)
 
-    scene = Scene(xres, yres, projection=projection, scaler=scaler, location=location, catalogue=catalogue, time=timestamp)
+    scene = Scene(xres, yres, projection=projection, scaler=scaler, location=location,
+                  catalogue=catalogue, time=timestamp, sky=sky)
     scene.build(fragments)
 
     scene.render_as_poisson()

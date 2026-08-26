@@ -1,8 +1,21 @@
+"""
+What the atmosphere does to a frame: it takes light away, and it adds light of its own.
+
+Those are the two stages, and the split is the point of this module. Everything arriving from
+outside -- stars, planets, the meteor -- is dimmed by `Extinction`, once, over the whole column.
+Everything generated inside is an `Emission` and is added afterwards: the airglow, the moon's light
+scattered towards the camera, the last of the twilight, and light pollution when it is written.
+
+It used to be one list applied in order, `[sun, moon, extinction, airglow]`, which made the ordering
+load-bearing in a way nobody had chosen: the sun and moon terms are scattered light, generated inside
+the atmosphere, and being ahead of `extinction` in the list they were dimmed as though they had come
+from outside it, while the airglow, being behind it, was not dimmed at all.
+
+Path lengths are `effects/airmass.py`, which is also where the note about the two of them lives.
+"""
 import numpy as np
-
 from abc import abstractmethod
-
-from typing import Union, Optional
+from typing import Optional
 
 from demeteor.metrics import spherical
 from numpy.typing import ArrayLike
@@ -11,19 +24,22 @@ from astropy.coordinates import EarthLocation, get_body, AltAz
 from astropy.time import Time
 import astropy.units as u
 
+from effects import airmass
+
 
 class SkyEffect:
     """
-    Effects defined in terms of angles in the sky.
-    In general can be purely additive (sources, such as stars, scattered light, airglow)
-    or subtractive / dividing (clouds, obstructions, ...).
+    Something the atmosphere does to the light reaching each pixel, in terms of that pixel's
+    altitude and azimuth. Either takes light away (`Extinction`) or adds it (`Emission`).
     """
     def __init__(self,
                  location: EarthLocation,
-                 time: Optional[Time] = None):
+                 time: Optional[Time] = None,
+                 **kwargs):
         self.location = location
         self.time = time if time is not None else Time.now()
         self.altaz = AltAz(obstime=self.time, location=self.location)
+        self.extinction = kwargs.pop('extinction', airmass.EXTINCTION)
 
     @abstractmethod
     def __call__(self,
@@ -31,128 +47,147 @@ class SkyEffect:
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
         """
-        Transform the value at data by the corresponding value at (`alt`, `az`)
+        Transform the value at `data` by whatever happens at (`alt`, `az`).
         """
 
-
-class SkySource(SkyEffect):
-    """
-    SkySource is a source -- its function is purely additive.
-    """
-    def __call__(self,
-                 data: ArrayLike,
-                 alt: ArrayLike,
-                 az: ArrayLike) -> ArrayLike:
-        return data + self.func(alt, az)
-
-    @abstractmethod
-    def func(self,
-             alt: ArrayLike,
-             az: ArrayLike) -> ArrayLike:
-        """
-        The inner function of the source, defined at (`alt`, `az`)
-        """
+    def body_altaz(self, body: str):
+        """ Where the sun or the moon is, from here, now. """
+        return get_body(body, self.time, self.location).transform_to(self.altaz)
 
     @staticmethod
-    def path_length(alt: ArrayLike) -> ArrayLike:
+    def angular_distance(alt: ArrayLike, az: ArrayLike, target) -> ArrayLike:
         """
-        Path length from infinity at altitude `alt`.
+        Angle from every pixel to a body. The pixel arrays are (y, x), so the coordinate pair goes on
+        a new last axis -- which is what `spherical` expects and what the old `axis=2` happened to
+        mean for a two-dimensional frame and nothing else.
         """
-        return (1 - 0.96 * np.cos(alt)) ** -0.5
-
-
-class Sunlight(SkySource):
-    def func(self,
-             alt: ArrayLike,
-             az: ArrayLike) -> ArrayLike:
-        sun = get_body('sun', self.time, self.location)
-        sun = sun.transform_to(self.altaz)
-        brightness = -26.74 * u.mag
-
-        pixels = np.stack((alt, az), axis=2)
-        dist = spherical(pixels, np.stack((sun.alt.radian, sun.az.radian), axis=0))
-
-        intensity = 10 * (0.8 * np.sin(sun.alt) + 0.2) if sun.alt >= 0 else 0.1 * np.exp(sun.alt.radian * 10)
-
-        return np.where(
-            alt <= 0,
-            0,
-            25 * np.exp(-alt * 5) * np.exp(-dist**2) * intensity
-        )
-
-
-class Airglow(SkySource):
-    def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
-        super().__init__(location, time)
-        self.intensity = kwargs.pop('intensity', 0)
-
-    def func(self,
-             alt: ArrayLike,
-             az: ArrayLike) -> ArrayLike:
-        x = self.path_length(alt)
-        extinction = 0.145
-        return np.where(
-            alt <= 0, 0,
-            self.intensity * 10**(-0.4 * extinction * (x - 1)) * x,
-        )
+        pixels = np.stack((alt, az), axis=-1)
+        return spherical(pixels, np.array([target.alt.radian, target.az.radian]))
 
 
 class Extinction(SkyEffect):
-    def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
-        super().__init__(location, time)
-        self.k = kwargs.pop('k', 0.145)
+    """
+    Attenuation of everything that came from outside the atmosphere: `exp(-tau)` over the air mass.
 
-    @staticmethod
-    def path_length(alt: ArrayLike) -> ArrayLike:
-        """
-        Path length from infinity at altitude `alt`.
-        """
-        u = np.sin(alt)
-        return np.where(
-            alt > 0,
-            # 1 / np.sin(alt + 244 / (165 + 47 * np.degrees(alt)**1.1)), Pickering 2002 is useless shit
-            (1.002432 * u**2 + 0.148386 * u + 0.0096467) / (u**3 + 0.149846 * u**2 + 0.0102963 * u + 0.000303978),
-            1000
-        )
-
+    Multiplicative, and applied once, to the sum of the sources rather than to each of them -- there
+    is only one column and every photon in a pixel crossed the same amount of it.
+    """
     def __call__(self,
                  data: ArrayLike,
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
-        x = self.path_length(alt)
-        return data * 10**(-0.4 * self.k * x)
+        return data * airmass.transmittance(self.extinction, alt)
 
 
-class Moonlight(SkySource):
-    def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
-        super().__init__(location, time)
-        self.extinction = kwargs.pop('extinction', 0)
+class Emission(SkyEffect):
+    """
+    Light the atmosphere makes or redirects, added to the frame.
 
-    @staticmethod
-    def separated(ang: ArrayLike) -> ArrayLike:
-        return 10**5.36 * (1.06 + np.cos(ang)**2) + 10**(6.15 - np.degrees(ang) / 40)
-
-
-    @staticmethod
-    def intensity(phase: ArrayLike) -> ArrayLike:
-        return 10**(-0.4 * (3.84 + 0.026 * np.abs(np.degrees(phase)) + 4e-9 * np.degrees(phase)**4))
-
-    def brightness(self, alt: ArrayLike) -> ArrayLike:
-        """
-        alt: altitude
-        """
-        return 10**(-0.4 * self.extinction * self.path_length(alt))
-
-    def func(self,
+    Purely additive, and zero below the horizon -- what is down there is the ground, and the ground is
+    not this module's business. Light pollution will be one of these.
+    """
+    def __call__(self,
+                 data: ArrayLike,
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
-        moon = get_body('moon', self.time, self.location)
+        return data + np.where(alt > 0, self.radiance(alt, az), 0.0)
+
+    @abstractmethod
+    def radiance(self,
+                 alt: ArrayLike,
+                 az: ArrayLike) -> ArrayLike:
+        """
+        What this source shines at the camera from (`alt`, `az`), in the scene's flux units.
+        """
+
+
+class Airglow(Emission):
+    """
+    The night sky's own light: OH and O2 emitting in a layer around 90 km.
+
+    A layer and not a column, so the horizon enhancement is van Rhijn's -- about six at the horizon,
+    not the air mass's thirty-eight -- and what leaves the layer is then dimmed by the whole
+    atmosphere beneath it. The two together rise from the zenith to a maximum near ten degrees and
+    fall below it, which is what one sees.
+
+    The version this replaces multiplied by an air mass and dimmed by `10**(-0.4 k (X - 1))`, giving
+    an airglow that fell from 1.00 at the zenith to 0.29 at the horizon: brightest overhead, which is
+    backwards.
+    """
+    def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
+        self.intensity = kwargs.pop('intensity', 0.0)
+        self.height = kwargs.pop('height', airmass.AIRGLOW_HEIGHT)
+        super().__init__(location, time, **kwargs)
+
+    def radiance(self,
+                 alt: ArrayLike,
+                 az: ArrayLike) -> ArrayLike:
+        layer = airmass.van_rhijn(alt, height=self.height)
+        return self.intensity * layer * airmass.transmittance(self.extinction, alt)
+
+
+class Moonlight(Emission):
+    """
+    Moonlight scattered towards the camera by the air between it and the sky.
+
+    Krisciunas & Schaefer (1991), in three parts: how much light the moon sends at this phase, how
+    much of it a column at this angular distance scatters towards us, and what the atmosphere takes on
+    the way in and on the way to the camera. The scattering medium is the whole lower atmosphere, so
+    the emission saturates as `1 - exp(-tau)` rather than growing with the air mass.
+
+    This used to return exactly zero, at every phase and every altitude. `intensity()` called
+    `np.degrees` on a phase angle the caller had already converted, so 110.8 degrees arrived as 6347,
+    the `4e-9 * alpha**4` term reached 6.5e6, and `10**(-0.4 * that)` underflowed. The brightest thing
+    in the model was switched off by a unit conversion. The angle is now converted once, here, from an
+    astropy quantity that carries its own unit.
+    """
+    @staticmethod
+    def scattering(distance: ArrayLike) -> ArrayLike:
+        """
+        The scattering function: Rayleigh at large angles, plus the aureole close to the moon.
+        """
+        return 10 ** 5.36 * (1.06 + np.cos(distance) ** 2) + 10 ** (6.15 - np.degrees(distance) / 40)
+
+    @staticmethod
+    def illuminance(phase: u.Quantity) -> float:
+        """
+        The moon's own brightness at phase angle `phase`, greatest at full and falling steeply.
+        """
+        alpha = float(np.abs(phase.to(u.deg).value))
+        return 10 ** (-0.4 * (3.84 + 0.026 * alpha + 4e-9 * alpha ** 4))
+
+    def radiance(self,
+                 alt: ArrayLike,
+                 az: ArrayLike) -> ArrayLike:
+        moon = self.body_altaz('moon')
+        if moon.alt.radian <= 0:
+            return np.zeros_like(np.asarray(alt, dtype=float))
+
         sun = get_body('sun', self.time, self.location)
-        phase = moon.separation(sun)
+        phase = get_body('moon', self.time, self.location).separation(sun)
 
-        moon_altaz = moon.transform_to(self.altaz)
+        # What reaches the air above us, the moon's own air mass having taken its share on the way in
+        incident = self.illuminance(phase) * airmass.transmittance(self.extinction, moon.alt.radian)
 
-        pixels = np.stack((alt, az), axis=2)
-        dist = spherical(pixels, np.stack((moon_altaz.alt.radian, moon_altaz.az.radian), axis=0).T)
+        distance = self.angular_distance(alt, az, moon)
+        tau = airmass.optical_depth(self.extinction, airmass.kasten_young(alt))
+        return airmass.slab_radiance(self.scattering(distance) * incident, tau)
 
-        return self.separated(dist) * self.intensity(phase.value) * self.brightness(np.pi / 2 - moon_altaz.alt.radian) * (1 - self.brightness(np.pi / 2 - alt))
+
+class Sunlight(Emission):
+    """
+    Twilight: the sun below the horizon, its light still scattered into the frame.
+
+    The formula is left as this file inherited it, and it is crude on purpose -- an exponential in
+    altitude times a Gaussian in distance from the sun, with no defence beyond looking approximately
+    right. Simulations run in the dark, so it is the least consequential term here; the day it
+    matters it wants a real twilight model rather than a correction to this one.
+    """
+    def radiance(self,
+                 alt: ArrayLike,
+                 az: ArrayLike) -> ArrayLike:
+        sun = self.body_altaz('sun')
+        distance = self.angular_distance(alt, az, sun)
+        intensity = (10 * (0.8 * np.sin(sun.alt) + 0.2) if sun.alt >= 0
+                     else 0.1 * np.exp(sun.alt.radian * 10))
+        return 25 * np.exp(-alt * 5) * np.exp(-distance ** 2) * intensity
