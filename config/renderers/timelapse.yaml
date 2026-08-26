@@ -69,8 +69,8 @@ detector:
     agc_min: 50               # the range a tube can be driven over
     agc_max: 20000
     excess_noise: 2.0
-    glow: 20                # [e-/s/pixel] at the photocathode, at the centre of the field
-    glow_radius: 70         # [pixels]
+    glow: 60                # [e-/s/pixel] at the photocathode, at the centre of the field
+    glow_radius: 100        # [pixels]
 
 # How a point source lands on the sensor: the full width at half maximum in the middle of the field
 # and at the edge of the circle, in pixels, interpolated linearly in radius. At these field angles a
@@ -87,6 +87,11 @@ psf:
   fwhm_edge: 2.2
   halo_fraction: 0.03       # of the light, in the wing
   halo_fwhm: 12
+  # The wing is a Moffat, `(1 + r^2/a^2)^-beta`, and beta is what makes a bloom a bloom: a power law
+  # at fifty pixels is 2.5e-4 of its peak where a Gaussian is 1e-21. Lower it for more glow -- 1.5
+  # gives the Moon a 73 px core and a 400 px glow, 2.2 gives 59 and 221.
+  halo_beta: 1.8
+  halo_max: 200             # [px] where to stop drawing it; a power law has no natural end
 
 # How many times inside one exposure the meteor is drawn. It moves tens of pixels while the shutter
 # is open, so one sample per frame renders a dot where a real camera records a streak. The stars and

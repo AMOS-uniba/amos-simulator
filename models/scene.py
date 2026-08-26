@@ -52,9 +52,13 @@ class Scene:
         psf = dict(psf or {})
         self.sigma_centre = psf.get('fwhm_centre', 1.8) / 2.3548
         self.sigma_edge = psf.get('fwhm_edge', 2.2) / 2.3548
-        # The halo: a second, broad component carrying a few percent of the light. See add_points.
+        # The halo: a second, broad component carrying a few percent of the light. A Moffat, not a
+        # Gaussian -- see halo_profile for why the shape of the wing is the whole point of it.
         self.halo_fraction = psf.get('halo_fraction', 0.03)
-        self.sigma_halo = psf.get('halo_fwhm', 12.0) / 2.3548
+        self.halo_beta = psf.get('halo_beta', 1.8)
+        self.halo_alpha = (psf.get('halo_fwhm', 12.0)
+                           / (2.0 * np.sqrt(2.0 ** (1.0 / self.halo_beta) - 1.0)))
+        self.halo_max = psf.get('halo_max', 200.0)
         self.subsamples = int(subsamples)
         self.xres = xres
         self.yres = yres
@@ -216,8 +220,36 @@ class Scene:
 
         logging.info(f"The Moon: V = {Moonlight.magnitude(phase):.2f} at phase "
                  f"{phase.to(u.deg).value:.1f} deg, radius {np.degrees(radius) * 60:.1f} arcmin")
+        # The disc without its halo, then the halo once, from the whole of its light
         self.add_points(Angle(alt * u.rad), Angle(az * u.rad),
-                        u.Quantity(np.full(samples, flux / samples), u.W / u.m ** 2))
+                        u.Quantity(np.full(samples, flux * (1.0 - self.halo_fraction) / samples),
+                                   u.W / u.m ** 2), halo=False)
+        self.add_halo(Angle(moon.alt.radian * u.rad), Angle(moon.az.radian * u.rad),
+                      flux * u.W / u.m ** 2)
+
+    def add_halo(self, alt: Angle, az: Angle, flux: u.Quantity) -> None:
+        """
+        The halo of one object, from the whole of its light, drawn once around a single point.
+
+        For anything the sky presents as a point -- every star -- `add_points` does this itself. This
+        is for an object sampled into many points, where the wing has to be added whole.
+        """
+        value = float(u.Quantity(flux).to_value(u.W / u.m ** 2))
+        reach = self.halo_truncation(value)
+        if reach <= 0:
+            return
+
+        mx, my = self.projection.invert(np.pi / 2 - alt.to(u.rad).value, az.to(u.rad).value)
+        x, y = self.scaler.invert(mx, my)
+        rad = int(np.ceil(reach) + 1)
+        xmin, xmax = max(0, int(x) - rad), min(self.xres, int(x) + rad + 1)
+        ymin, ymax = max(0, int(y) - rad), min(self.yres, int(y) + rad + 1)
+        if xmin >= xmax or ymin >= ymax:
+            return
+
+        yy, xx = np.mgrid[ymin:ymax, xmin:xmax]
+        self.data[ymin:ymax, xmin:xmax] += (self.halo_profile(np.hypot(xx - x, yy - y))
+                                           * value * self.halo_fraction)
 
     def add_fragments(self, fragments: list[SkyPointSource], exposure=None, subsamples: int = 1):
         """
@@ -281,20 +313,42 @@ class Scene:
     #: a power-law wing; modelling one means a second, broad PSF component, not a bigger number here.
     TRUNCATE_MAX = 20.0
 
+    def halo_peak(self, flux: float) -> float:
+        """ Surface brightness at the middle of the halo, from its analytic normalisation. """
+        return flux * self.halo_fraction * (self.halo_beta - 1.0) / (np.pi * self.halo_alpha ** 2)
+
+    def halo_profile(self, radius: ArrayLike) -> ArrayLike:
+        """
+        The wing: a Moffat, `(1 + r^2/a^2)^-beta`, normalised to one over the plane.
+
+        A power law and not an exponential, which is the whole point. Fifty pixels out from something
+        bright a Gaussian wing is 1e-21 of its peak and this is 2.5e-4 of it -- seventeen orders of
+        magnitude -- and the second is what a bright source actually does to a frame. With a Gaussian
+        halo the Moon's bloom stopped dead at 40 px; with this it reaches three hundred.
+
+        `beta` is the knob: 1.5 for a lot of glow, 2.2 for a little.
+        """
+        alpha = self.halo_alpha
+        return ((self.halo_beta - 1.0) / (np.pi * alpha ** 2)
+                * (1.0 + (np.asarray(radius, dtype=float) / alpha) ** 2) ** -self.halo_beta)
+
     def halo_truncation(self, flux: float) -> float:
         """
         How far the halo is worth drawing, or zero when it cannot light a pixel anywhere.
+
+        Inverting a power law costs a root where inverting a Gaussian costs a logarithm, which is why
+        a bright source reaches so much further now. Bounded by `halo_max`, because a power law has no
+        natural end and a patch has to be drawn.
 
         Faint stars never show one, so they keep a small patch and their three percent is normalised
         into the core -- three percent of the light moved a couple of pixels, inside any aperture
         anybody would measure with.
         """
-        peak = flux * self.halo_fraction / (2.0 * np.pi * self.sigma_halo ** 2)
-        floor = self.detector.smallest_flux
+        peak, floor = self.halo_peak(flux), self.detector.smallest_flux
         if not np.isfinite(peak) or peak <= floor:
             return 0.0
-        return float(min(self.sigma_halo * np.sqrt(2.0 * np.log(peak / floor)),
-                         self.TRUNCATE_MAX * self.sigma_halo))
+        reach = self.halo_alpha * np.sqrt((peak / floor) ** (1.0 / self.halo_beta) - 1.0)
+        return float(min(reach, self.halo_max))
 
     def truncation(self, flux: float, sigma: float) -> float:
         """
@@ -333,9 +387,15 @@ class Scene:
     def add_points(self,
                    alt: ArrayLike,
                    az: ArrayLike,
-                   intensities: ArrayLike) -> None:
+                   intensities: ArrayLike,
+                   halo: bool = True) -> None:
         """
         Add a collection of point sources (defined by `alt`, `az`) to the scene.
+
+        `halo=False` draws the core alone, for a caller sampling one extended object into many points
+        that will add its halo once -- see add_moon. A halo belongs to the whole of an object's light,
+        and cutting it into five hundred pieces truncates every piece early: the Moon's glow reached
+        64 px that way, against the three hundred its own brightness asks for.
         """
         assert alt.shape == az.shape == intensities.shape, \
             f"Coordinates and intensities have a wrong shape: {alt.shape=}, {az.shape=}, {intensities.shape=}"
@@ -356,7 +416,8 @@ class Scene:
         sigmas = self.psf_sigma(nx, ny)
 
         for xi, yi, ii, si in zip(nx, ny, intensities, sigmas):
-            rad = int(np.ceil(max(self.truncation(ii, si), self.halo_truncation(ii))) + 1)
+            rad = int(np.ceil(max(self.truncation(ii, si),
+                                  self.halo_truncation(ii) if halo else 0.0)) + 1)
             xmin, xmax = max(0, int(np.floor(xi)) - rad), min(self.xres, int(np.floor(xi)) + rad + 1)
             ymin, ymax = max(0, int(np.floor(yi)) - rad), min(self.yres, int(np.floor(yi)) + rad + 1)
             if xmin >= xmax or ymin >= ymax:
@@ -373,10 +434,14 @@ class Scene:
             # is outside an aperture is a fixed few percent rather than a function of the width.
             core = np.outer(self.pixel_gaussian(yi, ymin, ymax - 1, si),
                             self.pixel_gaussian(xi, xmin, xmax - 1, si))
-            if self.halo_fraction > 0:
-                halo = np.outer(self.pixel_gaussian(yi, ymin, ymax - 1, self.sigma_halo),
-                                self.pixel_gaussian(xi, xmin, xmax - 1, self.sigma_halo))
-                g = (1.0 - self.halo_fraction) * core + self.halo_fraction * halo
+            if halo and self.halo_fraction > 0:
+                # Sampled at pixel centres rather than integrated over them, which the core cannot
+                # afford and this does not need: at a dozen pixels across the wing hardly varies
+                # inside one pixel, and it is not separable, so integrating it would cost a
+                # quadrature per patch for no accuracy anybody could measure.
+                yy, xx = np.mgrid[ymin:ymax, xmin:xmax]
+                wing = self.halo_profile(np.hypot(xx - xi, yy - yi))
+                g = (1.0 - self.halo_fraction) * core + self.halo_fraction * wing
             else:
                 g = core
 

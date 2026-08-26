@@ -227,8 +227,31 @@ class TestHowFarASourceIsDrawn:
         # The core is what would fill the well: one count is `floor`, so the top of the range is 256
         saturated = s.data >= 256 * floor
         core, glow = saturated.any(axis=0).sum(), lit.any(axis=0).sum()
-        assert 20 < core < 55, f"a core {core} px across is not the Moon"
-        assert glow > core, f"the glow should reach past the core, {glow} against {core}"
+        assert 40 < core < 90, f"a core {core} px across is not the Moon"
+        assert glow > 3 * core, f"the glow should reach well past the core, {glow} against {core}"
+
+    def test_a_power_law_wing_reaches_orders_of_magnitude_further(self):
+        """
+        Why the halo is a Moffat. At fifty pixels the two profiles differ by seventeen orders of
+        magnitude, which is the difference between a bloom and a slightly fat star.
+        """
+        s = scene(psf={'halo_fwhm': 12.0, 'halo_beta': 1.8})
+        moffat = s.halo_profile(50.0) / s.halo_profile(0.0)
+        sigma = 12.0 / 2.3548
+        gaussian = np.exp(-50.0 ** 2 / (2 * sigma ** 2))
+        assert moffat > 1e-5
+        assert gaussian < 1e-20
+        assert moffat / gaussian > 1e14
+
+    def test_beta_is_the_knob(self):
+        near, far = scene(psf={'halo_beta': 2.2}), scene(psf={'halo_beta': 1.5})
+        assert far.halo_truncation(5.5e-5) > near.halo_truncation(5.5e-5)
+
+    def test_the_wing_integrates_to_one_over_the_plane(self):
+        """ Analytic normalisation, so the fraction in the halo is the fraction configured. """
+        s = scene(psf={'halo_fwhm': 12.0, 'halo_beta': 1.8})
+        r = np.arange(0.0, 4000.0, 0.25)
+        assert float((s.halo_profile(r) * 2 * np.pi * r * 0.25).sum()) == pytest.approx(1.0, abs=0.01)
 
     def test_and_the_halo_is_only_a_few_percent_of_its_light(self):
         """ The core has to keep the photometry: the glow is a wing, not half the star. """
@@ -242,7 +265,11 @@ class TestHowFarASourceIsDrawn:
         assert inside / total == pytest.approx(0.97, abs=0.03)
 
     def test_and_all_of_its_light_is_on_the_frame(self):
-        """ Five hundred and twelve samples, each with its share, and nothing lost between them. """
+        """
+        Five hundred and twelve samples, each with its share, and nothing lost between them -- bar
+        the power law's tail past `halo_max`, which is 0.06% of the Moon, or 0.0007 magnitudes. A
+        Moffat cannot be drawn to infinity and that is what stopping costs.
+        """
         s = scene()
         s.add_moon()
         from effects.sky import Moonlight
@@ -250,4 +277,4 @@ class TestHowFarASourceIsDrawn:
         from astropy.coordinates import get_body
         phase = get_body('moon', s.time, s.location).separation(get_body('sun', s.time, s.location))
         assert s.data.sum() == pytest.approx(brightness.flux_from_magnitude(Moonlight.magnitude(phase)),
-                                             rel=1e-6)
+                                             rel=2e-3)
