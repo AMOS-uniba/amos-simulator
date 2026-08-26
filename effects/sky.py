@@ -23,6 +23,7 @@ from numpy.typing import ArrayLike
 from astropy.coordinates import EarthLocation, get_body, AltAz
 from astropy.time import Time
 import astropy.units as u
+from scipy.interpolate import RegularGridInterpolator
 
 from effects import airmass, brightness
 
@@ -212,53 +213,95 @@ class Moonlight(Emission):
 
 class Sunlight(Emission):
     """
-    Twilight: the Sun below the horizon, its light still scattered into the frame.
+    Twilight: the Sun below the horizon, its light scattered into the frame by the air that is still
+    in sunlight.
 
-    Now in the same currency as everything else -- a surface brightness in magnitudes per square
-    arcsecond -- which is what makes it possible to say how bright it should be. It used to be a bare
-    `25 * exp(-alt * 5) * exp(-dist**2) * intensity`, and those constants were tuned against a scene
-    whose gain was an arbitrary 1e13; read as W/m2 per pixel they came to 4.7e-3 against a dark sky's
-    3.8e-12, so switching the term on saturated every pixel of every frame.
+    The structure and the fall-off are geometry, not fitted constants. A line of sight leaves the
+    Earth's shadow at some height -- `airmass.shadow_height` -- and only the air above that point can
+    scatter anything towards the camera. The density above a height falls off with an 8 km scale
+    height, so the brightness goes as `exp(-H_shadow / 8 km)`, and as the Sun sinks the shadow climbs
+    and the sky darkens.
 
-    Two numbers now, both configured: the peak surface brightness when the Sun is twelve degrees
-    down, and how fast it fades as the Sun sinks further. The defaults put twilight two magnitudes
-    above a dark sky at -12 and level with it by -18, so it is plain to see across nautical twilight
-    and gone by the end of astronomical twilight.
+    **That reproduces the observed rate without being told it.** On the sunward horizon the shadow
+    rises from 46 km at twelve degrees of depression to 89 km at eighteen, which is a factor of 199
+    in density above it: 5.75 magnitudes over six degrees, or 0.96 per degree, which is what twilight
+    is measured to do. It also gets the shape right: the shadow is lowest towards the Sun and near
+    the horizon, so that is where the glow is, and it sinks as the Sun does.
 
-    **That fade is gentler than the sky's.** Real twilight falls off at closer to a magnitude per
-    degree of depression, which over six degrees is a factor of 250 -- overwhelming at one end of the
-    band or invisible at the other, whichever end one anchors. 0.4 keeps the whole band worth
-    looking at. Steepen `fade` for realism at the cost of a usable range.
+    Single scattering alone would make the zenith far darker than it is -- at twelve degrees down the
+    shadow is 154 km up at the zenith, where there is nothing left to scatter -- because the zenith at
+    that hour is lit by light that has bounced more than once. `multiple_scattering` is that: a
+    diffuse floor, taken as a fraction of the sunward horizon's direct term, which is the crudest
+    honest stand-in for a radiative transfer calculation.
 
-    The shape is inherited unchanged: an exponential in altitude times a Gaussian in distance from
-    the Sun, so it is brightest at the horizon in the Sun's direction. It has no defence beyond
-    looking approximately right, and outside twilight it is extrapolation -- with the Sun up, this
-    happily returns a daylit sky, which for a meteor camera is a white frame, correctly.
+    Two constants, then, and they are the fittable part of this: `brightness` sets the level and
+    `multiple_scattering` the horizon-to-zenith contrast. **The rate is not among them** -- it comes
+    out of the shadow geometry at 0.97 magnitudes per degree whatever these two are set to, which is
+    what makes the model worth more than the three tuned numbers it replaced.
+
+    `brightness` is the surface brightness of the sunward horizon at sunset, in magnitudes per square
+    arcsecond, and it sets the level of everything. 9.7 puts the zenith at 19.5 mag/arcsec2 with the
+    Sun twelve degrees down and 25.4 -- three and a half magnitudes below a dark sky, so invisible --
+    at eighteen. The sunward horizon keeps a trace past eighteen, which it does in life too.
+
+    **Neither constant is measured, and they should be.** They come from what the sky is generally
+    said to look like at nautical twilight, not from a photometric table, and the horizon-to-zenith
+    contrast this pair gives, 4.2 magnitudes, is at the steep end of plausible. Patat et al. (2006)
+    measured UBVRI twilight at Paranal against solar depression and is what to fit against; a real
+    frame from the station in question would do as well. The two numbers are in config/renderers,
+    which is where a fit would land.
     """
-    #: The depression the configured brightness refers to, in degrees. The end of nautical twilight,
-    #: which is where a station's night begins.
-    REFERENCE = 12.0
+    #: Where the shadow-height grid is evaluated before being interpolated onto the pixels. The
+    #: twilight field is smooth in altitude and in azimuth from the Sun, so this is plenty, and it
+    #: turns 1.9 million rays into two thousand.
+    GRID = 48
 
     def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
-        #: Peak surface brightness at REFERENCE degrees of depression, in mag/arcsec2
-        self.brightness = kwargs.pop('brightness', 19.5)
-        #: Magnitudes fainter per further degree of depression
-        self.fade = kwargs.pop('fade', 0.4)
+        #: Surface brightness of the sunward horizon at sunset, mag/arcsec2
+        self.brightness = kwargs.pop('brightness', 9.7)
+        #: Fraction of it that reaches the rest of the sky by scattering more than once
+        self.multiple_scattering = kwargs.pop('multiple_scattering', 0.4)
         super().__init__(location, time, **kwargs)
 
-    def peak_brightness(self, depression: float) -> float:
-        """ The surface brightness at the brightest point of the sky, in mag/arcsec2. """
-        return self.brightness + self.fade * (depression - self.REFERENCE)
+    def lit_fraction(self, alt: ArrayLike, delta_az: ArrayLike, sun_alt: float) -> ArrayLike:
+        """
+        How much scattering air a line of sight has above the shadow, relative to the whole column.
+        """
+        height = airmass.shadow_height(alt, delta_az, sun_alt)
+        return np.exp(-height / airmass.SCALE_HEIGHT)
 
     def radiance(self,
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
         sun = self.body_altaz('sun')
-        peak = brightness.flux_from_surface_brightness(
-            self.peak_brightness(-sun.alt.degree), self.pixel_solid_angle)
+        delta = np.abs(np.asarray(az, dtype=float) - sun.az.radian) % (2.0 * np.pi)
+        delta = np.minimum(delta, 2.0 * np.pi - delta)
 
-        distance = self.angular_distance(alt, az, sun)
-        # Unity at the horizon in the Sun's direction and falling away from it, both in altitude and
-        # in azimuth, which is the one thing the old formula got right
-        shape = np.exp(-np.asarray(alt, dtype=float) * 5.0) * np.exp(-distance ** 2)
-        return peak * shape
+        # On a coarse grid, then interpolated: the field is smooth and the march is per-ray
+        axis_alt = np.linspace(0.0, np.pi / 2, self.GRID)
+        axis_az = np.linspace(0.0, np.pi, self.GRID)
+        mesh_alt, mesh_az = np.meshgrid(axis_alt, axis_az, indexing='ij')
+        grid = self.lit_fraction(mesh_alt, mesh_az, sun.alt.radian)
+        direct = RegularGridInterpolator((axis_alt, axis_az), grid, bounds_error=False,
+                                         fill_value=None)(
+            np.stack([np.clip(alt, 0.0, np.pi / 2), delta], axis=-1))
+
+        # What has bounced more than once, taken as a fraction of the brightest part of the sky
+        horizon = float(self.lit_fraction(np.array([0.0]), np.array([0.0]), sun.alt.radian)[0])
+        scattered = direct + self.multiple_scattering * horizon
+
+        # Rayleigh, normalised to one at ninety degrees: the air scatters forwards and backwards
+        # about twice as well as sideways
+        angle = self.angular_distance(alt, az, sun)
+        rayleigh = 0.75 * (1.0 + np.cos(angle) ** 2)
+
+        # How much air is on this line of sight at all, saturating as it thickens -- the same slab
+        # the moonlight uses, and for the same reason: this is light made along the ray, not light
+        # arriving through it. Attenuating it by the full column instead, as an external source, put
+        # the zenith *brighter* than the sunward horizon: the horizon's nineteen air masses took
+        # eleven times as much away as its longer lit path had gained.
+        tau = airmass.optical_depth(self.extinction, airmass.kasten_young(alt))
+        column = airmass.slab_radiance(1.0, tau)
+
+        peak = brightness.flux_from_surface_brightness(self.brightness, self.pixel_solid_angle)
+        return peak * scattered * column * rayleigh

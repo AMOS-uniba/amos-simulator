@@ -76,14 +76,17 @@ sky:
     brightness: 21.8
     height: 90
   moon: true
-  # Twilight, as a surface brightness at the brightest point of the sky: `brightness` is what it
-  # reaches when the Sun is twelve degrees down, and `fade` is how many magnitudes it loses per
-  # further degree. These defaults put it eight times a dark sky at -12 and level with it by -18, so
-  # it is plain across nautical twilight and gone by the end of astronomical. Real twilight fades
-  # nearer a magnitude a degree, which over that band is a factor of 250 -- too much at one end or
-  # nothing at the other. See effects/sky.py:Sunlight.
+  # Twilight. Its shape and its fall-off are geometry -- how high the Earth's shadow stands on each
+  # line of sight, and how little air is left above that -- so there is only one number to set:
+  # `brightness`, the surface brightness of the sunward horizon at sunset, in mag/arcsec2. It puts
+  # the zenith at 19.5 when the Sun is twelve degrees down and 25.4 -- invisible -- at eighteen,
+  # which is astronomical twilight ending where it should. `multiple_scattering` is the diffuse floor
+  # of light that has bounced more than once, as a fraction of the sunward horizon's direct term, and
+  # it sets the horizon-to-zenith contrast. **Neither is measured**: fit them against Patat et al.
+  # (2006) or a real frame. The fall-off with depression is not fitted at all -- it comes out of the
+  # shadow geometry at 0.97 mag per degree. See effects/sky.py:Sunlight.
   twilight:
-    brightness: 19.5
-    fade: 0.4
+    brightness: 9.7
+    multiple_scattering: 0.4
   # A meteor camera works in the dark; this costs a body position per frame.
   sun: false

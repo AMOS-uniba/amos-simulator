@@ -192,53 +192,89 @@ class TestTheMoonAsABody:
 
 class TestTwilight:
     """
-    The one term whose constants were in no unit at all, now a surface brightness like the others.
-    Its scale is set by what it has to look like across nautical twilight, which is a choice, and the
-    docstring says so.
+    The shape and the fall-off are geometry; only the absolute level is a constant. So these check
+    the geometry, and the one number is checked by what it implies.
     """
     def source(self, **kwargs):
         return Sunlight(WHERE, MOONLIT, pixel_solid_angle=PIXEL, **kwargs)
 
-    def test_the_reference_depression_is_what_it_says(self):
-        assert self.source().peak_brightness(12.0) == pytest.approx(19.5)
+    def lit(self, altitude, azimuth_from_sun, depression):
+        return float(self.source().lit_fraction(np.array([np.radians(altitude)]),
+                                                np.array([np.radians(azimuth_from_sun)]),
+                                                np.radians(-depression))[0])
 
-    def test_it_fades_as_the_sun_sinks(self):
+    def test_at_sunset_the_sunward_horizon_is_in_full_sunlight(self):
+        assert self.lit(0.5, 0.0, 0.0) == pytest.approx(1.0, abs=0.02)
+
+    def test_the_shadow_climbs_as_the_sun_sinks(self):
+        heights = [airmass.shadow_height(np.array([np.radians(1.0)]), np.array([0.0]),
+                                         np.radians(-d))[0] for d in (0, 3, 6, 9, 12, 15, 18)]
+        assert np.all(np.diff(heights) > 0)
+        # And the numbers themselves: 46 km up at the end of nautical twilight, 89 at astronomical
+        assert heights[4] == pytest.approx(46.3, rel=0.05)
+        assert heights[6] == pytest.approx(88.6, rel=0.05)
+
+    def test_and_stands_higher_away_from_the_sun(self):
+        assert self.lit(1.0, 0.0, 12.0) > self.lit(1.0, 90.0, 12.0) > self.lit(1.0, 180.0, 12.0)
+
+    def test_the_observed_rate_falls_out_of_the_geometry(self):
+        """
+        The check this model exists for. Twilight is measured to fade by about a magnitude for every
+        degree the Sun sinks; nothing here was told that, it follows from the shadow rising through an
+        atmosphere with an 8 km scale height.
+        """
+        rate = -2.5 * np.log10(self.lit(1.0, 0.0, 18.0) / self.lit(1.0, 0.0, 12.0)) / 6.0
+        assert rate == pytest.approx(1.0, abs=0.15)
+
+    def test_astronomical_twilight_ends_where_it_is_defined_to(self):
+        """
+        By eighteen degrees the zenith has to be well below a dark sky, which the definition says and
+        this has to reproduce rather than assume. The sunward horizon keeps a trace past eighteen,
+        which it does in life too, so it is the zenith that is checked.
+        """
         s = self.source()
-        assert s.peak_brightness(15.0) == pytest.approx(20.7)
-        assert s.peak_brightness(18.0) == pytest.approx(21.9)
+        zenith = (brightness.flux_from_surface_brightness(s.brightness, PIXEL)
+                  * (self.lit(89.0, 0.0, 18.0) + s.multiple_scattering * self.lit(1.0, 0.0, 18.0))
+                  * 0.125 * 0.75)
+        assert zenith < 0.1 * brightness.flux_from_surface_brightness(21.8, PIXEL)
 
-    def test_visible_at_minus_twelve_and_gone_by_minus_eighteen(self):
+    def test_the_zenith_lands_where_nautical_twilight_is_quoted(self):
         """
-        What the numbers were chosen for: eight times a dark sky at the end of nautical twilight, and
-        level with it -- so invisible -- by the end of astronomical.
+        19.5 mag/arcsec2 at twelve degrees of depression, which is about what nautical twilight is
+        said to look like. This is the constant's doing, not the geometry's, and it is the number a
+        real calibration would move.
         """
         s = self.source()
-        dark = 21.8
-        assert 5 < 10 ** (0.4 * (dark - s.peak_brightness(12.0))) < 15
-        assert 10 ** (0.4 * (dark - s.peak_brightness(18.0))) < 1.2
+        flux = (brightness.flux_from_surface_brightness(s.brightness, PIXEL)
+                * (self.lit(89.0, 0.0, 12.0) + s.multiple_scattering * self.lit(1.0, 0.0, 12.0))
+                * 0.125 * 0.75)
+        magnitude = -2.5 * np.log10(flux) - brightness.ZERO_POINT + 2.5 * np.log10(PIXEL)
+        assert magnitude == pytest.approx(19.5, abs=0.4)
 
-    def test_a_steeper_fade_is_the_realistic_one_and_unusable(self):
-        """
-        Real twilight falls off near a magnitude a degree. Over the six degrees of nautical twilight
-        that is a factor of 250, which cannot be both visible at one end and subtle at the other --
-        which is why the default is gentler, deliberately.
-        """
-        real = self.source(fade=1.0)
-        span = 10 ** (0.4 * (real.peak_brightness(18.0) - real.peak_brightness(12.0)))
-        assert span > 200
-
-    def test_it_is_brightest_at_the_horizon_towards_the_sun(self):
-        s = self.source()
+    def test_the_sunward_horizon_is_the_brightest_part_of_the_sky(self):
+        s = Sunlight(WHERE, Time('2025-10-01T17:40:00'), pixel_solid_angle=PIXEL)
         sun = s.body_altaz('sun')
         towards = grid([2.0], azimuth=sun.az.degree)
         away = grid([2.0], azimuth=(sun.az.degree + 180) % 360)
         overhead = grid([88.0], azimuth=sun.az.degree)
-        assert one(s.radiance(*towards)) > 100 * one(s.radiance(*away))
-        assert one(s.radiance(*towards)) > 100 * one(s.radiance(*overhead))
+        assert one(s.radiance(*towards)) > one(s.radiance(*away))
+        assert one(s.radiance(*towards)) > one(s.radiance(*overhead))
 
-    def test_and_it_scales_with_the_configured_brightness(self):
-        alt, az = grid([2.0], azimuth=279.0)
-        bright = self.source(brightness=18.5)
-        faint = self.source(brightness=19.5)
-        assert one(bright.radiance(alt, az)) == pytest.approx(10 ** 0.4 * one(faint.radiance(alt, az)),
-                                                             rel=1e-6)
+    def test_and_the_contrast_grows_as_the_sun_sinks(self):
+        """ The glow shrinks towards the sunward horizon rather than fading uniformly. """
+        contrasts = [self.lit(1.0, 0.0, d) / self.lit(45.0, 0.0, d) for d in (6, 9, 12)]
+        assert contrasts == sorted(contrasts)
+
+    def test_nothing_that_matters_is_lit_in_the_middle_of_the_night(self):
+        """
+        Not `inf`: a ray does leave the shadow eventually, a couple of thousand kilometres out, and
+        the honest statement is that there is no air there. The exponential says so exactly.
+        """
+        height = airmass.shadow_height(np.array([0.5]), np.array([0.0]), np.radians(-60.0))[0]
+        assert height > 500.0
+        # 1e-124 of the column, which is zero in every sense but the arithmetic's
+        assert self.lit(30.0, 0.0, 60.0) < 1e-30
+
+    def test_and_straight_up_at_midnight_the_ray_never_leaves_it(self):
+        assert np.isinf(airmass.shadow_height(np.array([np.radians(89.0)]), np.array([0.0]),
+                                              np.radians(-60.0))[0])

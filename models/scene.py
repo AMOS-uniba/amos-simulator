@@ -136,8 +136,8 @@ class Scene:
         if self.sky.get('sun', False):
             dusk = self.sky.get('twilight', {})
             sources.append(Sunlight(self.location, self.time, **common,
-                                    brightness=dusk.get('brightness', 19.5),
-                                    fade=dusk.get('fade', 0.4)))
+                                    brightness=dusk.get('brightness', 9.7),
+                                    multiple_scattering=dusk.get('multiple_scattering', 0.4)))
         return sources
 
     def add_emission(self) -> None:

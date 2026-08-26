@@ -106,3 +106,58 @@ def slab_radiance(source: ArrayLike, tau: ArrayLike) -> ArrayLike:
     spends most of its pixels. This costs one exponential more.
     """
     return np.asarray(source, dtype=float) * -np.expm1(-np.asarray(tau, dtype=float))
+
+
+#: Pressure scale height of the lower atmosphere, in kilometres. What matters here is that the
+#: density above a given height falls by e every 8 km, so a shadow rising through the atmosphere
+#: extinguishes twilight roughly exponentially.
+SCALE_HEIGHT = 8.0
+
+
+def shadow_height(alt: ArrayLike,
+                  delta_az: ArrayLike,
+                  sun_alt: float,
+                  samples: int = 96,
+                  reach: float = 6000.0) -> ArrayLike:
+    """
+    Height at which a line of sight leaves the Earth's shadow, in kilometres.
+
+    This is the quantity twilight is made of. The Sun is below the horizon, so the air near the
+    observer is in shadow and scatters nothing; the light comes from the part of the column that is
+    still lit, which begins at this height. As the Sun sinks the shadow climbs, the lit column thins,
+    and the sky darkens -- and because the density above a height falls off exponentially, so does
+    the brightness.
+
+    Marched along the ray rather than solved, because the closed form needs a small-angle
+    approximation that fails exactly where it matters, looking away from the Sun. A point at
+    distance `s` is lit when the Sun stands above *its* horizon, which is depressed by
+    `arccos(R / (R + z))` -- the dip that lets a mountain top see a sunset the valley has missed.
+
+    `inf` where no part of the ray is lit at all, which is the whole sky once the Sun is far enough
+    down.
+
+    Args:
+        alt: altitude of the line of sight, radians
+        delta_az: its azimuth *relative to the Sun's*, radians
+        sun_alt: the Sun's altitude, radians and negative
+    """
+    alt = np.asarray(alt, dtype=float)
+    delta_az = np.asarray(delta_az, dtype=float)
+    s = np.geomspace(1.0, reach, samples)
+
+    # Height of each sample above the surface, exactly: a straight ray from a sphere of radius R
+    z = np.sqrt(EARTH_RADIUS ** 2 + s ** 2
+                + 2.0 * EARTH_RADIUS * s * np.sin(alt)[..., np.newaxis]) - EARTH_RADIUS
+    # and how far around the globe it has travelled
+    theta = np.arcsin(np.clip(s * np.cos(alt)[..., np.newaxis] / (EARTH_RADIUS + z), -1.0, 1.0))
+
+    # The Sun's altitude as seen from there: the observer's, rotated by theta towards delta_az
+    local = np.arcsin(np.clip(np.sin(sun_alt) * np.cos(theta)
+                              + np.cos(sun_alt) * np.sin(theta) * np.cos(delta_az)[..., np.newaxis],
+                              -1.0, 1.0))
+    dip = np.arccos(np.clip(EARTH_RADIUS / (EARTH_RADIUS + z), -1.0, 1.0))
+
+    lit = local > -dip
+    any_lit = lit.any(axis=-1)
+    first = np.argmax(lit, axis=-1)
+    return np.where(any_lit, np.take_along_axis(z, first[..., np.newaxis], axis=-1)[..., 0], np.inf)
