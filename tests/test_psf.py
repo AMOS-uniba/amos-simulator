@@ -388,3 +388,75 @@ class TestTheLightCurve:
         assert 0.5 < peak / (len(curve) - 1) < 0.75, 'a meteor peaks past the middle of its flight'
         assert np.all(np.diff(curve[:peak]) > 0)
         assert np.all(np.diff(curve[peak:]) < 0)
+
+
+class TestTheWake:
+    """
+    What is behind a meteor is the air it left excited, and that decays -- so the trail is an
+    exponential memory of where the meteoroid was, not a string of copies of it.
+    """
+    def fragment(self, rate=10.0):
+        """ A track climbing `rate` degrees a second, bright throughout. """
+        times = WHEN + np.arange(-20, 21) * 0.05 * u.s
+        alt = Angle(np.linspace(50.0 - rate, 50.0 + rate, times.size) * u.deg)
+        az = Angle(np.full(times.size, 100.0) * u.deg)
+        dist = Quantity(np.full(times.size, 1.2e5), u.m)
+        flux = Quantity(np.full(times.size, 1e-9), u.W / u.m ** 2)
+        return SkyPointSource(alt, az, dist, flux, times)
+
+    def rendered(self, wake, exposure=0.04, subsamples=8):
+        s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+        s.add_fragments([self.fragment()], exposure=exposure * u.s, subsamples=subsamples, wake=wake)
+        return s.data
+
+    def test_no_wake_is_the_exposure_alone(self):
+        """ Tau at zero has to collapse to the previous behaviour exactly, or it is two code paths. """
+        assert self.rendered(None).sum() == pytest.approx(self.rendered(0.0).sum(), rel=1e-9)
+
+    def test_a_wake_puts_light_behind_the_meteor_and_not_in_front(self):
+        plain, trailed = self.rendered(0.0), self.rendered(0.06)
+        # the track climbs in altitude, which on this plate runs one way; compare the extent either
+        # side of the plain streak's centroid
+        ys, xs = np.nonzero(plain)
+        w = plain[ys, xs]
+        cy = (w * ys).sum() / w.sum()
+        ty, tx = np.nonzero(trailed)
+        tw = trailed[ty, tx]
+        behind = tw[ty > cy].sum()
+        ahead = tw[ty < cy].sum()
+        assert behind > 2 * ahead or ahead > 2 * behind, 'the wake has to be one-sided'
+
+    def test_a_longer_decay_makes_a_longer_trail(self):
+        def length(data):
+            ys, xs = np.nonzero(data > 0.02 * data.max())
+            return np.hypot(ys.max() - ys.min(), xs.max() - xs.min())
+        assert length(self.rendered(0.15)) > 1.5 * length(self.rendered(0.02))
+
+    def test_the_glow_that_outlives_the_exposure_is_lost_from_it(self):
+        """
+        And correctly: it belongs to the next frame. So a frame with a wake holds less than one
+        exposure's worth of light, and the deficit grows with the decay time.
+        """
+        whole = self.rendered(0.0).sum()
+        assert self.rendered(0.02).sum() < whole
+        assert self.rendered(0.15).sum() < self.rendered(0.02).sum()
+
+    def test_and_consecutive_frames_get_it_back(self):
+        """
+        Nothing is destroyed, only delayed: summing enough frames recovers the light within a percent.
+        """
+        s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+        total = 0.0
+        for k in range(-2, 8):
+            one = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+            one.time = s.time + k * 0.05 * u.s
+            one.add_fragments([self.fragment()], exposure=0.04 * u.s, subsamples=8, wake=0.06)
+            total += one.data.sum()
+
+        flat = 0.0
+        for k in range(-2, 8):
+            one = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+            one.time = s.time + k * 0.05 * u.s
+            one.add_fragments([self.fragment()], exposure=0.04 * u.s, subsamples=8, wake=0.0)
+            flat += one.data.sum()
+        assert total == pytest.approx(flat, rel=0.05)

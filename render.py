@@ -102,12 +102,13 @@ class MeteorRenderer(Scalyca):
         sky = self.camera.sky.toDict() if 'sky' in self.camera else {}
         psf = self.camera.psf.toDict() if 'psf' in self.camera else {}
         subsamples = self.camera.get('subsamples', 1)
+        wake = self.camera.get('wake', None)
         detector = Detector(optics=self.camera.get('optics', {}).toDict() if 'optics' in self.camera else {},
                             detector=self.camera.detector.toDict())
         args = [(self.camera.detector.xres, self.camera.detector.yres,
                  self.projection, self.scaler,
                  self.observer.location, self.catalogue, self.fragments, i, time, self.output_dir,
-                 sky, detector, psf, subsamples)
+                 sky, detector, psf, subsamples, wake)
                 for i, time in enumerate(self.times)]
         pool = Pool(self.config.cores)
         log.info(f"Rendering {len(self.fragments)} fragment(s) at {len(self.times)} times "
@@ -126,14 +127,15 @@ def render(xres: int, yres: int,
            sky: dict,
            detector: Detector,
            psf: dict,
-           subsamples: int) -> int:
+           subsamples: int,
+           wake: float) -> int:
 
     # This is needed so that noise is not generated using the same seed across workers
     np.random.seed((os.getpid() * int(time.time())) % 123456789)
 
     scene = Scene(xres, yres, projection=projection, scaler=scaler, location=location,
                   catalogue=catalogue, time=timestamp, sky=sky, detector=detector,
-                  psf=psf, subsamples=subsamples)
+                  psf=psf, subsamples=subsamples, wake=wake)
     scene.build(fragments)
     # The shot noise, the dark current, the intensifier and the readout all live in the detector
     # now, in electrons, where the three calls that used to be here had arbitrary units.

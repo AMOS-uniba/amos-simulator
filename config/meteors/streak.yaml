@@ -1,0 +1,17 @@
+# A fast one, across the line of sight: 50 km/s at eighty degrees to the direction AGO is looking,
+# so it sweeps 27 degrees of sky in a second and a half -- 18 degrees a second, or 7.6 pixels a frame
+# at twenty frames a second, with six of those pixels of smear inside each 40 ms exposure. Streaky.
+#
+# Not the full ninety degrees, so it does descend: 26 of the 50 km/s are downwards and it falls from
+# 100 km to 61 over the flight. Absolute magnitude -8 at the peak, as the other fireball.
+location:
+  latitude: 49
+  longitude: 18
+  altitude: 100000
+velocity:
+  x: -48567.6
+  y: 11590.6
+  z: 2617.2
+mass: 1
+magnitude: -8
+time: 2025-10-01T20:20:20

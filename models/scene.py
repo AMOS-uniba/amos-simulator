@@ -41,7 +41,8 @@ class Scene:
                  sky: dict = None,
                  detector: Detector = None,
                  psf: dict = None,
-                 subsamples: int = 1):
+                 subsamples: int = 1,
+                 wake: float = None):
         # What the atmosphere is like tonight. A dict rather than a DotMap because this is handed to
         # a Pool worker and has to pickle; `config/renderers/*.yaml` is where the numbers live.
         self.sky = dict(sky or {})
@@ -60,6 +61,9 @@ class Scene:
                            / (2.0 * np.sqrt(2.0 ** (1.0 / self.halo_beta) - 1.0)))
         self.halo_max = psf.get('halo_max', 200.0)
         self.subsamples = int(subsamples)
+        #: How long the trail behind a meteor keeps glowing, in seconds. Physically the meteor's
+        #: property and not the camera's, but this is where the flight becomes frames.
+        self.wake = wake
         self.xres = xres
         self.yres = yres
         self.data = np.zeros(shape=(yres, xres))
@@ -98,7 +102,7 @@ class Scene:
         if self.sky.get('moon', True):
             self.add_moon()
         self.add_fragments(fragments, exposure=self.detector.exposure * u.s,
-                           subsamples=self.subsamples)
+                           subsamples=self.subsamples, wake=self.wake)
         self.attenuate()
         self.add_emission()
 
@@ -309,28 +313,66 @@ class Scene:
         self.data[ymin:ymax, xmin:xmax] += (self.halo_profile(np.hypot(xx - x, yy - y))
                                            * value * self.halo_fraction)
 
-    def add_fragments(self, fragments: list[SkyPointSource], exposure=None, subsamples: int = 1):
-        """
-        Draw the meteor as it was over the whole exposure, not as it was at one instant.
+    #: How many decay times of wake to bother drawing. Five leaves 0.7% behind.
+    WAKE_REACH = 5.0
 
-        A meteor crosses tens of pixels while the shutter is open, so a single sample per frame
-        renders a dot where a camera records a streak -- and a streak is what Kvant measures, both
-        for position and for brightness. Each of `subsamples` sub-times carries its share of the
-        flux, so the total light in the frame is unchanged and only its distribution moves.
+    def add_fragments(self, fragments: list[SkyPointSource], exposure=None, subsamples: int = 1,
+                      wake=None):
+        """
+        Draw the meteor as it was over the whole exposure, and the trail it left glowing behind it.
+
+        Two things, and the second is why the first is written this way.
+
+        **The exposure.** A meteor crosses several pixels while the shutter is open, so a single
+        sample per frame renders a dot where a camera records a streak, and a streak is what a
+        reduction measures -- for position and for brightness both.
+
+        **The wake.** What is behind a meteor is not the meteoroid, it is the air and vapour it left
+        excited, and that decays. So light emitted at time `t` appears at the position the meteoroid
+        had at `t` and fades from there with a time constant, which makes the trail an exponential
+        memory rather than a string of copies. One can approximate it with thirty particles getting
+        fainter along the trail; this is that in the limit, and it costs less, because the fraction of
+        an emission's glow that lands inside a given exposure has a closed form:
+
+            K(t) = exp(-max(0, T0 - t) / tau) - exp(-(T1 - t) / tau)
+
+        for an exposure from T0 to T1 -- the decaying kernel integrated over the shutter being open.
+        Emission before the shutter opens is caught if it is still glowing; emission near the end is
+        partly lost to the next frame, which is correct and is why the weights do not sum to one.
+        With `tau` at zero it collapses to the exposure integral alone, one for every sub-time inside
+        the shutter and nothing outside, so the two cases are one piece of code.
 
         `SkyPointSource.at_time` interpolates to any instant and returns zero outside the flight, so
-        a sub-time that falls before the meteor started contributes nothing, correctly.
+        an emission time before the meteor began contributes nothing, correctly.
         """
-        if exposure is None or subsamples <= 1:
-            offsets = [0.0 * u.s]
-        else:
-            # Centres of `subsamples` equal slices of the exposure, which is centred on self.time
-            step = exposure / subsamples
-            offsets = (np.arange(subsamples) - (subsamples - 1) / 2.0) * step
+        if exposure is None:
+            for fragment in fragments:
+                alt, az, inten = fragment.at_time(self.time)
+                self.add_points(alt, az, inten)
+            return
 
-        weight = 1.0 / len(offsets)
+        half = exposure / 2.0
+        step = exposure / max(subsamples, 1)
+        tau = 0.0 * u.s if wake is None else u.Quantity(wake, u.s)
+
+        # Emission times: the exposure, extended backwards by however long the wake glows
+        back = int(np.ceil((self.WAKE_REACH * tau / step).to_value(u.dimensionless_unscaled))) \
+            if tau > 0 else 0
+        index = np.arange(-back, max(subsamples, 1))
+        times = -half + (index + 0.5) * step
+
+        if tau > 0:
+            before = np.clip((-half - times) / tau, 0.0, None)
+            kernel = np.exp(-before.to_value(u.dimensionless_unscaled)) \
+                - np.exp(-((half - times) / tau).to_value(u.dimensionless_unscaled))
+        else:
+            kernel = np.ones(index.size)
+
+        weights = kernel * (step / exposure).to_value(u.dimensionless_unscaled)
         for fragment in fragments:
-            for offset in offsets:
+            for offset, weight in zip(times, weights):
+                if weight <= 0:
+                    continue
                 alt, az, inten = fragment.at_time(self.time + offset)
                 self.add_points(alt, az, inten * weight)
 

@@ -1,0 +1,7 @@
+# One fast fireball, with half a second of sky either side.
+#
+# 30 steps of 50 ms is a second and a half of flight; config/renderers/default.yaml pads with half a
+# second at each end, so the clip is 51 frames -- two and a half seconds at twenty frames a second.
+# The Moon is 12 degrees up in the south-south-west, 68% lit.
+start: "2025-10-01T20:20:20"
+count: 30
