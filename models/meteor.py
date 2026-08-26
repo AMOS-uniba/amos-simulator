@@ -13,18 +13,42 @@ from astropy.time import Time
 log = logging.getLogger('root')
 
 
+#: Radiated power of a zero-magnitude meteor, in watts, at the hundred kilometres an absolute
+#: magnitude is defined at. Ceplecha et al. (1998) and every photometric mass since; the band it
+#: refers to is the visual one, which is also what `Scene.vmag_to_intensity` assumes, so the two ends
+#: of the pipeline agree about what a magnitude means.
+POWER_AT_ZERO = 1500.0
+
+#: If a meteor config does not say. Ordinary rather than spectacular.
+MAGNITUDE = -2.0
+
+
+def power_from_magnitude(magnitude: float) -> u.Quantity:
+    """
+    Peak radiated power from an absolute (100 km) magnitude.
+
+    -8 is 2.4 megawatts, -2 is 9.5 kilowatts, +2 is 240 watts. What an observer measures is fainter
+    by `5 log10(d / 100 km)`, so the same fireball seen from 130 km reads -7.4.
+    """
+    return POWER_AT_ZERO * 10 ** (-0.4 * float(magnitude)) * u.W
+
+
 class Meteor:
     def __init__(self,
                  initial_time: Time,
                  initial_mass: u.Quantity[u.kg],
                  initial_position: EarthLocation,
                  initial_velocity: CartesianDifferential,
-                 initial_brightness: u.Quantity[u.W] = 0 * u.W):
+                 initial_brightness: u.Quantity[u.W] = 0 * u.W,
+                 magnitude: float = None):
         self.time: Time = initial_time
         self.mass: u.Quantity[u.kg] = initial_mass
         self.position: EarthLocation = initial_position
         self.velocity: CartesianDifferential = initial_velocity
         self.brightness: u.Quantity[u.watt] = initial_brightness
+        #: What the light curve peaks at, from the absolute magnitude it is asked for
+        self.magnitude = MAGNITUDE if magnitude is None else float(magnitude)
+        self.peak_power = power_from_magnitude(self.magnitude)
 
     def simulate(self,
                  steps: int,
@@ -55,10 +79,13 @@ class Meteor:
         self.time = Time(
             self.time + np.arange(0, len(self.position)) * dt,
         )
+        # The light curve, in normalised time: a rise and a fall, peaking at tau = 5/8. It was
+        # `1e4 W` flat -- ten kilowatts for the whole flight, whatever the meteoroid was doing -- with
+        # this shape sitting commented out beside it. A meteor that does not brighten and fade is not
+        # a meteor, and the peak is now the configured magnitude rather than a constant in the code.
         tau = np.linspace(0, 1, steps + 1)
-        #self.brightness = 1e6 * u.W * (1 - tau)**3 * tau**5
-        self.brightness = 1e4 * u.W * np.ones_like(tau)
-        #self.brightness = 1e6 * u.W * np.exp(- self.position.height / u.km / 10)
+        shape = (1 - tau) ** 3 * tau ** 5
+        self.brightness = self.peak_power * shape / shape.max()
 
     @staticmethod
     def acceleration(position: EarthLocation, velocity: CartesianDifferential) -> u.Quantity[u.N]:
@@ -125,6 +152,7 @@ class Meteor:
                 data['velocity']['z'] * u.m / u.s,
             ),
             0 * u.W,
+            magnitude=data.get('magnitude', MAGNITUDE),
         )
 
     @staticmethod

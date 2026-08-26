@@ -357,3 +357,34 @@ class TestTheMoonsShape:
         rows = [np.diff(np.nonzero(row)[0]) for row in lit[500:700] if row.sum() > 20]
         assert rows, 'the crescent should span some rows'
         assert max(int(d.max()) for d in rows if d.size) <= 2
+
+
+class TestTheLightCurve:
+    """
+    A meteor that brightens and fades, with its peak set by the magnitude asked for. It used to
+    radiate a flat ten kilowatts for the whole flight, whatever the meteoroid was.
+    """
+    def test_a_magnitude_is_a_power(self):
+        from models.meteor import POWER_AT_ZERO, power_from_magnitude
+        assert power_from_magnitude(0.0).to_value(u.W) == pytest.approx(POWER_AT_ZERO)
+        assert power_from_magnitude(-8.0).to_value(u.W) == pytest.approx(2.38e6, rel=0.01)
+        assert power_from_magnitude(-5.0).to_value(u.W) == pytest.approx(
+            power_from_magnitude(0.0).to_value(u.W) * 100, rel=1e-6)
+
+    def test_it_rises_and_falls_and_peaks_where_it_is_asked_to(self):
+        from astropy.coordinates import CartesianDifferential, EarthLocation
+        from models.meteor import Meteor, power_from_magnitude
+        m = Meteor(WHEN, 1 * u.kg,
+                   EarthLocation.from_geodetic(18 * u.deg, 49 * u.deg, 100000 * u.m),
+                   CartesianDifferential(14265.8 * u.m / u.s, 4635.2 * u.m / u.s,
+                                         -13244.3 * u.m / u.s),
+                   magnitude=-8.0)
+        m.simulate(30, 0.05 * u.s)
+        curve = m.brightness.to_value(u.W)
+
+        assert curve.max() == pytest.approx(power_from_magnitude(-8.0).to_value(u.W), rel=1e-9)
+        assert curve[0] == 0 and curve[-1] == 0
+        peak = int(np.argmax(curve))
+        assert 0.5 < peak / (len(curve) - 1) < 0.75, 'a meteor peaks past the middle of its flight'
+        assert np.all(np.diff(curve[:peak]) > 0)
+        assert np.all(np.diff(curve[peak:]) < 0)

@@ -1,0 +1,17 @@
+# A fireball: absolute magnitude -8 at its peak, which is 2.4 MW radiated, entering at 100 km over
+# 49N 18E at about 20 km/s. The geometry is meteor 18's, which is known to cross AGO's sky; only the
+# brightness is new.
+#
+# `magnitude` is the absolute one, at the hundred kilometres the definition uses. From AGO it is 130
+# km away, so what the camera sees peaks near -7.4.
+location:
+  latitude: 49
+  longitude: 18
+  altitude: 100000
+velocity:
+  x: 14265.8477444273035817
+  y: 4635.2549156242
+  z: -13244.3
+mass: 1
+magnitude: -8
+time: 2025-10-01T20:20:20

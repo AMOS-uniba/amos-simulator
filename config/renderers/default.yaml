@@ -39,7 +39,15 @@ detector:
   # the 255 counts, which puts a dark zenith sky near twenty-five and leaves a V=6 star visible above
   # it. Those are the numbers to turn when a rendered frame is to be matched against a real one.
   intensifier:
-    gain: 10000
+    # 2500, not 10000. Fixed and not `auto`, unlike the timelapse: here the brightness of the meteor
+    # is the measurement, and a loop that turned the gain down as the fireball brightened would
+    # destroy the one number the frame is for.
+    #
+    # Which means the gain has to suit the brightest sky it will be pointed at. Under the Moon of
+    # 2025-10-01 the sky runs to 39 photoelectrons a pixel at the rim -- moonlight, not airglow --
+    # and 10000 put a fifth of that frame past the well. This leaves the rim near 190 counts and the
+    # zenith near 24, with nothing clipped but the Moon and the fireball, which should be clipped.
+    gain: 2500
     excess_noise: 2.0
     glow: 60                # [e-/s/pixel] at the photocathode, at the centre of the field
     glow_radius: 100        # [pixels]
