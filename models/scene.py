@@ -42,7 +42,7 @@ class Scene:
                  detector: Detector = None,
                  psf: dict = None,
                  subsamples: int = 1,
-                 wake: float = None):
+                 wake: dict = None):
         # What the atmosphere is like tonight. A dict rather than a DotMap because this is handed to
         # a Pool worker and has to pickle; `config/renderers/*.yaml` is where the numbers live.
         self.sky = dict(sky or {})
@@ -61,9 +61,10 @@ class Scene:
                            / (2.0 * np.sqrt(2.0 ** (1.0 / self.halo_beta) - 1.0)))
         self.halo_max = psf.get('halo_max', 200.0)
         self.subsamples = int(subsamples)
-        #: How long the trail behind a meteor keeps glowing, in seconds. Physically the meteor's
-        #: property and not the camera's, but this is where the flight becomes frames.
-        self.wake = wake
+        #: The trail behind a meteor: what fraction of the light lingers rather than leaving with the
+        #: meteoroid, and how long that takes to fade. Physically the meteor's property and not the
+        #: camera's, but this is where a flight becomes frames.
+        self.wake = dict(wake or {})
         self.xres = xres
         self.yres = yres
         self.data = np.zeros(shape=(yres, xres))
@@ -339,8 +340,16 @@ class Scene:
         for an exposure from T0 to T1 -- the decaying kernel integrated over the shutter being open.
         Emission before the shutter opens is caught if it is still glowing; emission near the end is
         partly lost to the next frame, which is correct and is why the weights do not sum to one.
-        With `tau` at zero it collapses to the exposure integral alone, one for every sub-time inside
-        the shutter and nothing outside, so the two cases are one piece of code.
+        With nothing lingering it collapses to the exposure integral alone, one for every sub-time
+        inside the shutter and nothing outside, so the two cases are one piece of code.
+
+        **Only a fraction of the light lingers**, and that fraction is the difference between a
+        fireball and a comet. The meteoroid radiates promptly -- that light is gone the instant it is
+        emitted and appears only where the head was while the shutter was open -- while what the
+        excited air gives back later is the wake. Made all memory, as this was at first, the trail
+        carries as much light as the head and looks painted on. `fraction` splits them: the prompt
+        part takes `1 - fraction` and follows the exposure alone, the lingering part takes `fraction`
+        and follows the kernel.
 
         `SkyPointSource.at_time` interpolates to any instant and returns zero outside the flight, so
         an emission time before the meteor began contributes nothing, correctly.
@@ -353,22 +362,28 @@ class Scene:
 
         half = exposure / 2.0
         step = exposure / max(subsamples, 1)
-        tau = 0.0 * u.s if wake is None else u.Quantity(wake, u.s)
+        settings = dict(wake or {})
+        tau = u.Quantity(settings.get('decay', 0.0), u.s)
+        lingering = float(settings.get('fraction', 0.0)) if tau > 0 else 0.0
 
         # Emission times: the exposure, extended backwards by however long the wake glows
         back = int(np.ceil((self.WAKE_REACH * tau / step).to_value(u.dimensionless_unscaled))) \
-            if tau > 0 else 0
+            if lingering > 0 else 0
         index = np.arange(-back, max(subsamples, 1))
         times = -half + (index + 0.5) * step
 
-        if tau > 0:
+        # The prompt part, which is inside the shutter and nowhere else
+        inside = np.where((times >= -half) & (times <= half), 1.0, 0.0)
+
+        if lingering > 0:
             before = np.clip((-half - times) / tau, 0.0, None)
             kernel = np.exp(-before.to_value(u.dimensionless_unscaled)) \
                 - np.exp(-((half - times) / tau).to_value(u.dimensionless_unscaled))
         else:
-            kernel = np.ones(index.size)
+            kernel = np.zeros(index.size)
 
-        weights = kernel * (step / exposure).to_value(u.dimensionless_unscaled)
+        weights = ((1.0 - lingering) * inside + lingering * kernel) \
+            * (step / exposure).to_value(u.dimensionless_unscaled)
         for fragment in fragments:
             for offset, weight in zip(times, weights):
                 if weight <= 0:

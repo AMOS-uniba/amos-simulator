@@ -100,14 +100,19 @@ psf:
 # One sample per exposure: there is no meteor to smear, and the stars move 0.6 arcseconds in 40 ms.
 subsamples: 1
 
-# How long the trail behind a meteor keeps glowing, in seconds. What is back there is not the
-# meteoroid but the air and vapour it left excited, so light emitted at one instant stays at the
-# position the meteoroid had then and fades from there -- an exponential memory rather than a string
-# of copies. 0.05 is a frame's worth of glow, which is what a fast meteor shows; 0 turns it off.
+# The trail behind a meteor. What is back there is not the meteoroid but the air and vapour it left
+# excited, so light emitted at one instant stays at the position the meteoroid had then and fades from
+# there -- an exponential memory rather than a string of copies.
 #
-# Physically the meteor's property and not the camera's, but this is the file where a flight becomes
-# frames, and it has to agree with the exposure to mean anything.
-wake: 0.05
+# `fraction` is how much of the light lingers that way. The rest is prompt: radiated by the meteoroid
+# and gone, so it appears only where the head was while the shutter was open. Make it all memory and
+# the trail carries as much light as the head and looks painted on; 0.15 leaves a bright head with a
+# tapering wake, which is what a fireball looks like. `decay` is how long that fraction takes to fade.
+#
+# Physically the meteor's, not the camera's, but this is the file where a flight becomes frames.
+wake:
+  fraction: 0.15
+  decay: 0.05               # [s]
 
 padding:
   start: 0

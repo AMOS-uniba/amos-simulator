@@ -102,7 +102,7 @@ class MeteorRenderer(Scalyca):
         sky = self.camera.sky.toDict() if 'sky' in self.camera else {}
         psf = self.camera.psf.toDict() if 'psf' in self.camera else {}
         subsamples = self.camera.get('subsamples', 1)
-        wake = self.camera.get('wake', None)
+        wake = self.camera.wake.toDict() if 'wake' in self.camera else {}
         detector = Detector(optics=self.camera.get('optics', {}).toDict() if 'optics' in self.camera else {},
                             detector=self.camera.detector.toDict())
         args = [(self.camera.detector.xres, self.camera.detector.yres,
@@ -128,7 +128,7 @@ def render(xres: int, yres: int,
            detector: Detector,
            psf: dict,
            subsamples: int,
-           wake: float) -> int:
+           wake: dict) -> int:
 
     # This is needed so that noise is not generated using the same seed across workers
     np.random.seed((os.getpid() * int(time.time())) % 123456789)

@@ -393,7 +393,8 @@ class TestTheLightCurve:
 class TestTheWake:
     """
     What is behind a meteor is the air it left excited, and that decays -- so the trail is an
-    exponential memory of where the meteoroid was, not a string of copies of it.
+    exponential memory of where the meteoroid was, not a string of copies of it. And only a fraction
+    of the light behaves that way: the rest is prompt, and stays with the head.
     """
     def fragment(self, rate=10.0):
         """ A track climbing `rate` degrees a second, bright throughout. """
@@ -404,59 +405,72 @@ class TestTheWake:
         flux = Quantity(np.full(times.size, 1e-9), u.W / u.m ** 2)
         return SkyPointSource(alt, az, dist, flux, times)
 
-    def rendered(self, wake, exposure=0.04, subsamples=8):
+    def rendered(self, wake, exposure=0.04, subsamples=8, when=None):
         s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+        if when is not None:
+            s.time = when
         s.add_fragments([self.fragment()], exposure=exposure * u.s, subsamples=subsamples, wake=wake)
         return s.data
 
     def test_no_wake_is_the_exposure_alone(self):
-        """ Tau at zero has to collapse to the previous behaviour exactly, or it is two code paths. """
-        assert self.rendered(None).sum() == pytest.approx(self.rendered(0.0).sum(), rel=1e-9)
+        """ Nothing lingering has to collapse to the previous behaviour, or it is two code paths. """
+        plain = self.rendered(None)
+        zero = self.rendered({'fraction': 0.0, 'decay': 0.05})
+        no_decay = self.rendered({'fraction': 0.5, 'decay': 0.0})
+        assert zero.sum() == pytest.approx(plain.sum(), rel=1e-9)
+        assert no_decay.sum() == pytest.approx(plain.sum(), rel=1e-9)
+        assert np.allclose(zero, plain)
+
+    def test_the_fraction_is_how_heavy_the_trail_is(self):
+        """
+        The complaint that produced this parameter: all memory and the trail weighs as much as the
+        head. Measured as the light outside a head-sized box, over the light inside it.
+        """
+        def ratio(fraction):
+            data = self.rendered({'fraction': fraction, 'decay': 0.05})
+            ys, xs = np.nonzero(data)
+            w = data[ys, xs]
+            cy, cx = int((w*ys).sum()/w.sum()), int((w*xs).sum()/w.sum())
+            head = data[cy-6:cy+7, cx-6:cx+7].sum()
+            return (data.sum() - head) / max(head, 1e-30)
+
+        light, heavy = ratio(0.15), ratio(1.0)
+        assert light < heavy / 2, f'{light:.2f} against {heavy:.2f}'
 
     def test_a_wake_puts_light_behind_the_meteor_and_not_in_front(self):
-        plain, trailed = self.rendered(0.0), self.rendered(0.06)
-        # the track climbs in altitude, which on this plate runs one way; compare the extent either
-        # side of the plain streak's centroid
+        plain = self.rendered({'fraction': 0.0, 'decay': 0.05})
+        trailed = self.rendered({'fraction': 1.0, 'decay': 0.06})
         ys, xs = np.nonzero(plain)
         w = plain[ys, xs]
         cy = (w * ys).sum() / w.sum()
         ty, tx = np.nonzero(trailed)
         tw = trailed[ty, tx]
-        behind = tw[ty > cy].sum()
-        ahead = tw[ty < cy].sum()
+        behind, ahead = tw[ty > cy].sum(), tw[ty < cy].sum()
         assert behind > 2 * ahead or ahead > 2 * behind, 'the wake has to be one-sided'
 
     def test_a_longer_decay_makes_a_longer_trail(self):
         def length(data):
             ys, xs = np.nonzero(data > 0.02 * data.max())
             return np.hypot(ys.max() - ys.min(), xs.max() - xs.min())
-        assert length(self.rendered(0.15)) > 1.5 * length(self.rendered(0.02))
+        assert length(self.rendered({'fraction': 1.0, 'decay': 0.15})) > \
+            1.5 * length(self.rendered({'fraction': 1.0, 'decay': 0.02}))
 
     def test_the_glow_that_outlives_the_exposure_is_lost_from_it(self):
         """
-        And correctly: it belongs to the next frame. So a frame with a wake holds less than one
-        exposure's worth of light, and the deficit grows with the decay time.
+        And correctly: it belongs to the next frame. So a frame holds less than one exposure's worth
+        of the lingering light, and the deficit grows with the decay time.
         """
-        whole = self.rendered(0.0).sum()
-        assert self.rendered(0.02).sum() < whole
-        assert self.rendered(0.15).sum() < self.rendered(0.02).sum()
+        whole = self.rendered({'fraction': 0.0, 'decay': 0.05}).sum()
+        short = self.rendered({'fraction': 1.0, 'decay': 0.02}).sum()
+        long_ = self.rendered({'fraction': 1.0, 'decay': 0.15}).sum()
+        assert short < whole
+        assert long_ < short
 
     def test_and_consecutive_frames_get_it_back(self):
-        """
-        Nothing is destroyed, only delayed: summing enough frames recovers the light within a percent.
-        """
-        s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
-        total = 0.0
-        for k in range(-2, 8):
-            one = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
-            one.time = s.time + k * 0.05 * u.s
-            one.add_fragments([self.fragment()], exposure=0.04 * u.s, subsamples=8, wake=0.06)
-            total += one.data.sum()
-
-        flat = 0.0
-        for k in range(-2, 8):
-            one = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
-            one.time = s.time + k * 0.05 * u.s
-            one.add_fragments([self.fragment()], exposure=0.04 * u.s, subsamples=8, wake=0.0)
-            flat += one.data.sum()
-        assert total == pytest.approx(flat, rel=0.05)
+        """ Nothing is destroyed, only delayed: enough frames recover the light within a percent. """
+        wake = {'fraction': 1.0, 'decay': 0.06}
+        base = scene().time
+        trailed = sum(self.rendered(wake, when=base + k * 0.05 * u.s).sum() for k in range(-3, 9))
+        prompt = sum(self.rendered({'fraction': 0.0, 'decay': 0.06},
+                                   when=base + k * 0.05 * u.s).sum() for k in range(-3, 9))
+        assert trailed == pytest.approx(prompt, rel=0.05)
