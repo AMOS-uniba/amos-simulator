@@ -278,3 +278,42 @@ class TestTwilight:
     def test_and_straight_up_at_midnight_the_ray_never_leaves_it(self):
         assert np.isinf(airmass.shadow_height(np.array([np.radians(89.0)]), np.array([0.0]),
                                               np.radians(-60.0))[0])
+
+
+class TestThePhaseAngle:
+    """
+    The Sun-Moon-Earth angle, and the mistake it is easy to make: astropy's `separation` gives the
+    *elongation*, and the phase angle is its supplement. Getting that wrong turns every phase into
+    its opposite, which is what this model did from the day it was written.
+    """
+    def test_it_is_the_supplement_of_the_elongation(self):
+        from astropy.coordinates import get_body
+        for when in ('2025-09-21T20:00:00', '2025-10-07T20:00:00', '2025-10-16T02:00:00'):
+            t = Time(when)
+            elongation = get_body('moon', t, WHERE).separation(get_body('sun', t, WHERE))
+            phase = Moonlight.phase_angle(WHERE, t)
+            assert (elongation + phase).to(u.deg).value == pytest.approx(180.0, abs=1e-6)
+
+    def test_the_full_moon_of_october_2025(self):
+        """ It was on the 7th. Ninety-nine percent lit, and within half a magnitude of -12.7. """
+        phase = Moonlight.phase_angle(WHERE, Time('2025-10-07T20:00:00'))
+        lit = (1 + np.cos(phase.to(u.rad).value)) / 2
+        assert lit > 0.98
+        assert Moonlight.magnitude(phase) == pytest.approx(-12.5, abs=0.5)
+
+    def test_and_the_new_moon_that_started_that_month(self):
+        """
+        2025-09-21, and the point of the test: read as a phase angle rather than an elongation, that
+        night's 1.8 degrees made the model draw a *full* Moon at V = -12.68.
+        """
+        phase = Moonlight.phase_angle(WHERE, Time('2025-09-21T20:00:00'))
+        lit = (1 + np.cos(phase.to(u.rad).value)) / 2
+        assert lit < 0.01
+        assert Moonlight.magnitude(phase) > -5.0
+
+    def test_the_moon_of_the_configured_epoch_is_a_waxing_gibbous(self):
+        """ 2025-10-01, which every other test in this repository is set at: 68% lit, not 32%. """
+        phase = Moonlight.phase_angle(WHERE, MOONLIT)
+        lit = (1 + np.cos(phase.to(u.rad).value)) / 2
+        assert lit == pytest.approx(0.676, abs=0.01)
+        assert Moonlight.magnitude(phase) == pytest.approx(-10.83, abs=0.05)

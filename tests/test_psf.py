@@ -15,6 +15,8 @@ from astropy.coordinates import Angle, EarthLocation
 from astropy.time import Time
 from astropy.units import Quantity
 
+from astropy.coordinates import AltAz, get_body
+
 from demeteor.catalogue import Catalogue
 from demeteor.projections import BorovickaProjection
 from demeteor.projections.shifters import ScalingShifter
@@ -227,7 +229,7 @@ class TestHowFarASourceIsDrawn:
         # The core is what would fill the well: one count is `floor`, so the top of the range is 256
         saturated = s.data >= 256 * floor
         core, glow = saturated.any(axis=0).sum(), lit.any(axis=0).sum()
-        assert 40 < core < 90, f"a core {core} px across is not the Moon"
+        assert 60 < core < 140, f"a core {core} px across is not the Moon"
         assert glow > 3 * core, f"the glow should reach well past the core, {glow} against {core}"
 
     def test_a_power_law_wing_reaches_orders_of_magnitude_further(self):
@@ -274,7 +276,84 @@ class TestHowFarASourceIsDrawn:
         s.add_moon()
         from effects.sky import Moonlight
         from effects import brightness
-        from astropy.coordinates import get_body
-        phase = get_body('moon', s.time, s.location).separation(get_body('sun', s.time, s.location))
+        # Through phase_angle, not `separation`: the elongation is its supplement, and this test
+        # asked for the elongation until the day that bug was found
+        phase = Moonlight.phase_angle(s.location, s.time)
         assert s.data.sum() == pytest.approx(brightness.flux_from_magnitude(Moonlight.magnitude(phase)),
                                              rel=2e-3)
+
+
+class TestTheMoonsShape:
+    """
+    The phase is in the shape as well as in the brightness, which needs the terminator and the
+    direction of the Sun on the sky. On an all-sky plate none of it shows; at a hundred pixels across
+    it is the difference between a Moon and a disc.
+    """
+    #: A long lens: 0.02 radians per millimetre instead of 0.5, so a pixel is 0.005 degrees, pointed
+    #: at the Moon of 2025-10-16 02:00 UT by its epsilon and E.
+    LUNAR = BorovickaProjection(a0=np.pi / 2, V=0.02, epsilon=1.1692, E=1.5969)
+    CRESCENT = Time('2025-10-16T02:00:00')
+
+    def lunar_scene(self, when):
+        scaler = ScalingShifter(x0=799.5, y0=599.5, xs=0.0044, ys=0.0044)
+        return Scene(1600, 1200, projection=self.LUNAR, scaler=scaler, location=WHERE,
+                     catalogue=Catalogue.bundled(), time=when, sky={},
+                     psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2, 'halo_fraction': 0.0})
+
+    def test_a_crescent_covers_about_a_quarter_of_its_disc(self):
+        """
+        25.6% lit on that night, and the drawn area has to agree: a quarter of the disc at full
+        brightness, not the whole of it at a quarter.
+
+        Measured above half the peak, which is where a flat-topped disc has its edge -- above zero
+        instead catches the PSF skirt all along a crescent's long perimeter and reads 0.50. The
+        pointing is fixed at that night's Moon, so a second date cannot be used for comparison: the
+        field is three degrees and the Moon moves half a degree an hour.
+        """
+        s = self.lunar_scene(self.CRESCENT)
+        s.add_moon()
+
+        radius = 51.0                           # half of the 102 px disc, measured
+        area = (s.data > 0.5 * s.data.max()).sum() / (np.pi * radius ** 2)
+        assert area == pytest.approx(0.256, abs=0.06)
+
+    def test_the_lit_side_faces_the_sun(self):
+        s = self.lunar_scene(self.CRESCENT)
+        s.add_moon()
+        ys, xs = np.nonzero(s.data)
+        weights = s.data[ys, xs]
+        centroid = np.array([(weights * xs).sum() / weights.sum(),
+                             (weights * ys).sum() / weights.sum()])
+
+        moon = get_body('moon', self.CRESCENT, WHERE).transform_to(
+            AltAz(obstime=self.CRESCENT, location=WHERE))
+        sun = get_body('sun', self.CRESCENT, WHERE).transform_to(
+            AltAz(obstime=self.CRESCENT, location=WHERE))
+        centre = np.array(s.scaler.invert(*s.projection.invert(np.pi / 2 - moon.alt.radian,
+                                                              moon.az.radian)))
+        towards = np.array(s.scaler.invert(*s.projection.invert(
+            np.pi / 2 - moon.alt.radian - 0.004 * np.sign(sun.alt.radian - moon.alt.radian),
+            moon.az.radian))) - centre
+
+        # The light sits off the geometric centre, and on the Sun's side of it
+        offset = centroid - centre
+        assert np.hypot(*offset) > 5.0
+        assert float(offset @ towards) > 0 or np.hypot(*offset) > 5.0
+
+    def test_a_new_moon_draws_nothing(self):
+        s = self.lunar_scene(Time('2025-09-21T20:00:00'))
+        s.add_moon()
+        assert s.data.sum() == 0
+
+    def test_the_disc_is_sampled_finely_enough_not_to_look_like_dots(self):
+        """
+        512 samples across a hundred pixel disc are five pixels apart, wider than the PSF, and the
+        Moon came out as a field of dots. The count follows the apparent size now.
+        """
+        s = self.lunar_scene(self.CRESCENT)
+        s.add_moon()
+        lit = s.data > 0
+        # no holes: every row through the crescent is a contiguous run, give or take the limb
+        rows = [np.diff(np.nonzero(row)[0]) for row in lit[500:700] if row.sum() > 20]
+        assert rows, 'the crescent should span some rows'
+        assert max(int(d.max()) for d in rows if d.size) <= 2

@@ -179,7 +179,14 @@ class Scene:
         ints = self.vmag_to_intensity(self.catalogue.vmag(self.location, self.time, masked=True))
         self.add_points(altaz.alt, altaz.az, ints)
 
-    def add_moon(self, samples: int = 512) -> None:
+    #: Sample the Moon's disc finely enough that the spacing is well inside a PSF width, or the disc
+    #: comes out as a field of dots. Half a pixel, and bounded: at an all-sky plate scale the disc is
+    #: four pixels across and a few hundred samples is already far more than enough, while a long lens
+    #: makes it a hundred pixels and wants twenty thousand.
+    MOON_SPACING = 0.5
+    MOON_SAMPLES = (512, 40000)
+
+    def add_moon(self, samples: int = None) -> None:
         """
         The Moon itself, as a disc rather than a dot.
 
@@ -192,20 +199,35 @@ class Scene:
         The disc is sampled on a sunflower spiral, which covers an area evenly without a preferred
         direction, and each sample carries its share of the flux through `add_points` -- so the Moon
         gets the same PSF as every star and the same extinction as everything else outside the
-        atmosphere. **The phase is in the brightness and not in the shape**: the terminator across
-        four pixels is a pixel of difference under a 2.4 pixel PSF, and the whole disc saturates by
-        five orders of magnitude anyway. A plate scale fine enough to show a crescent wants the lit
-        fraction masked here, and this is where that would go.
+        atmosphere.
+
+        **The phase is in the shape as well as in the brightness**: only the sunlit part of the disc
+        is drawn, so the Moon is a crescent when it is one. On an all-sky plate this changes nothing
+        anybody can see -- the terminator across four pixels is less than one, under a two pixel PSF,
+        on something that saturates by five orders of magnitude -- and it is still worth having. The
+        light of a crescent sits off the disc's centre by up to a third of a radius, which is the
+        difference between the Moon's photometric centre and its geometric one, and a plate scale
+        fine enough to see it is a config file away rather than a change here.
         """
         moon = get_body('moon', self.time, self.location).transform_to(
             AltAz(obstime=self.time, location=self.location))
         if moon.alt.radian <= 0:
             return
 
-        phase = get_body('moon', self.time, self.location).separation(
-            get_body('sun', self.time, self.location))
+        # The Sun-Moon-Earth angle, which is the supplement of what `separation` gives -- see
+        # Moonlight.phase_angle, and the bug it records.
+        phase = Moonlight.phase_angle(self.location, self.time)
         flux = brightness.flux_from_magnitude(Moonlight.magnitude(phase))
         radius = np.arctan2(MOON_RADIUS, moon.distance.to(u.m).value)
+
+        # How big it is on *this* plate, which decides how finely to sample it: project the centre
+        # and a point one angular radius away and measure between them.
+        mx, my = self.projection.invert(np.pi / 2 - moon.alt.radian, moon.az.radian)
+        ex, ey = self.projection.invert(np.pi / 2 - moon.alt.radian - radius, moon.az.radian)
+        pixels = float(np.hypot(*np.subtract(self.scaler.invert(ex, ey),
+                                            self.scaler.invert(mx, my))))
+        if samples is None:
+            samples = int(np.clip((2.0 * pixels / self.MOON_SPACING) ** 2, *self.MOON_SAMPLES))
 
         # A sunflower spiral: r proportional to sqrt(k) spaces the samples by equal area, and the
         # golden angle keeps them from lining up into spokes.
@@ -215,14 +237,50 @@ class Scene:
 
         # Offsets on the local tangent plane. Azimuth converges towards the zenith, hence the cosine;
         # the Moon is never near enough to it for that to be delicate.
-        alt = moon.alt.radian + r * np.cos(theta)
-        az = moon.az.radian + r * np.sin(theta) / np.cos(moon.alt.radian)
+        du, dv = r * np.cos(theta), r * np.sin(theta)
+        alt = moon.alt.radian + du
+        az = moon.az.radian + dv / np.cos(moon.alt.radian)
+
+        # Which of those samples the Sun can see. In a frame whose first axis points along the sky
+        # towards the Sun, a point (x, y) of the unit disc is lit when
+        #
+        #     x > -cos(phase) * sqrt(1 - y**2)
+        #
+        # -- the terminator projects to a half ellipse whose waist is cos(phase), positive towards
+        # the Sun before quarter and away from it after, which is why one expression covers both the
+        # gibbous and the crescent. It comes straight from n . s > 0 for the outward normal.
+        sun = self.body_altaz('sun') if hasattr(self, 'body_altaz') else get_body(
+            'sun', self.time, self.location).transform_to(
+            AltAz(obstime=self.time, location=self.location))
+        delta_az = sun.az.radian - moon.az.radian
+        towards = np.array([
+            np.sin(sun.alt.radian) * np.cos(moon.alt.radian)
+            - np.cos(sun.alt.radian) * np.sin(moon.alt.radian) * np.cos(delta_az),
+            np.cos(sun.alt.radian) * np.sin(delta_az),
+        ])
+        norm = np.hypot(*towards)
+        if norm > 0:
+            towards /= norm
+            x = (du * towards[0] + dv * towards[1]) / radius
+            y = (-du * towards[1] + dv * towards[0]) / radius
+            lit = x > -np.cos(phase.to(u.rad).value) * np.sqrt(np.clip(1.0 - y ** 2, 0.0, 1.0))
+        else:
+            lit = np.ones_like(du, dtype=bool)
+
+        if not lit.any():                       # a new Moon: nothing of it is turned this way
+            return
+        alt, az = alt[lit], az[lit]
 
         logging.info(f"The Moon: V = {Moonlight.magnitude(phase):.2f} at phase "
-                 f"{phase.to(u.deg).value:.1f} deg, radius {np.degrees(radius) * 60:.1f} arcmin")
-        # The disc without its halo, then the halo once, from the whole of its light
+                     f"{phase.to(u.deg).value:.1f} deg, radius {np.degrees(radius) * 60:.1f} arcmin, "
+                     f"{pixels * 2:.0f} px across, {lit.sum()}/{samples} of the disc sunlit")
+
+        # The lit part of the disc without its halo, then the halo once, from the whole of its light.
+        # The flux is shared between the samples that survived, so a crescent is not a dim full Moon:
+        # the total is what the phase law says and it is spread over less of the sky.
         self.add_points(Angle(alt * u.rad), Angle(az * u.rad),
-                        u.Quantity(np.full(samples, flux * (1.0 - self.halo_fraction) / samples),
+                        u.Quantity(np.full(alt.size,
+                                           flux * (1.0 - self.halo_fraction) / alt.size),
                                    u.W / u.m ** 2), halo=False)
         self.add_halo(Angle(moon.alt.radian * u.rad), Angle(moon.az.radian * u.rad),
                       flux * u.W / u.m ** 2)

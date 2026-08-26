@@ -1,0 +1,60 @@
+# A camera pointed at the Moon rather than at the sky: two milliseconds and a low fixed gain, which
+# is how anybody photographs it. The sky comes out black -- 0.06 of a count -- and the Moon comes out
+# as a shape instead of a saturated blob, so the terminator is visible.
+#
+# Use it with config/projections/lunar.yaml, which is what makes the disc a hundred pixels wide.
+pixels:
+  x0: 799.5
+  y0: 599.5
+  xs: 4.4
+  ys: 4.4
+
+optics:
+  aperture: 4.3
+  qe: 0.20
+  wavelength: 550
+
+detector:
+  xres: 1600
+  yres: 1200
+  interval: 600
+  # Two milliseconds. Long enough for the Moon at V = -8.8 to reach about two hundred counts over the
+  # lit side, short enough that nothing else on the sky registers at all.
+  exposure: 0.002
+  dark: 5
+  read_noise: 200
+  bias: 500
+  full_well: 128000
+  bits: 8
+  intensifier:
+    # Fixed, not automatic: an exposure this short is *for* the Moon, and a loop watching the frame
+    # would see a black sky, wind the gain to its limit and saturate the one thing being looked at.
+    gain: 450
+    excess_noise: 2.0
+    glow: 60
+    glow_radius: 100
+
+psf:
+  fwhm_centre: 1.8
+  fwhm_edge: 2.2
+  halo_fraction: 0.03
+  halo_fwhm: 12
+  halo_beta: 1.8
+  halo_max: 200
+
+subsamples: 1
+
+padding:
+  start: 0
+  end: 0
+
+sky:
+  extinction: 0.145
+  airglow:
+    brightness: 21.8
+    height: 90
+  moon: true
+  twilight:
+    brightness: 9.7
+    multiple_scattering: 0.4
+  sun: false

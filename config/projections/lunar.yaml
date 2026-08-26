@@ -1,0 +1,25 @@
+name: 'Borovička'
+# A long lens pointed at the Moon, not a fisheye pointed up.
+#
+# `V` is radians of sky per millimetre of sensor, so 0.02 instead of 0.5 makes a pixel 0.005 degrees
+# and the Moon a hundred pixels across -- and the field three degrees high rather than 180, which is
+# not an all-sky camera at all. The point is only that the renderer does not care, and that a
+# crescent needs about this much scale to be a crescent rather than four pixels.
+#
+# `epsilon` is how far the optical axis is tilted from the zenith and `E` the azimuth it is tilted
+# towards, so these two are what aim it: 67 degrees towards azimuth 91.5 puts the Moon of
+# 2025-10-16 02:00 UT within thirty pixels of the middle of the frame. Any other moment wants them
+# recomputed -- the Moon moves half a degree an hour, which is a hundred pixels here.
+parameters:
+  x0: 0
+  y0: 0
+  a0: 1.5707963267948966
+  A: 0.0
+  F: 0.0
+  V: 0.02
+  S: 0
+  D: 0
+  P: 0.00
+  Q: 0.00
+  epsilon: 1.1692            # 67.0 deg: 90 minus the Moon's altitude
+  E: 1.5969                  # 91.5 deg: the Moon's azimuth

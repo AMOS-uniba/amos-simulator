@@ -161,6 +161,26 @@ class Moonlight(Emission):
     FULL = -12.73
 
     @staticmethod
+    def phase_angle(location: EarthLocation, time: Time) -> u.Quantity:
+        """
+        The Sun-Moon-Earth angle: zero at full, 180 degrees at new.
+
+        **Not what `separation` returns.** That is the elongation, the angle between the two bodies as
+        seen from here, and the phase angle is its supplement -- 180 degrees of elongation is a full
+        Moon, and zero is a new one. This model had them the wrong way round from the start and
+        therefore had the Moon backwards: on 2025-09-21, an elongation of 1.8 degrees and so a new
+        Moon, it computed V = -12.68 and treated the sky as though the Moon were full. Every phase
+        was its own opposite.
+
+        The size of it: on 2025-10-01 the elongation is 110.7 degrees, so the phase angle is 69.3 and
+        the Moon is 68% lit at V = -10.84. Read as a phase angle, 110.7 gives 32% and V = -9.25 --
+        1.6 magnitudes and the wrong shape.
+        """
+        moon = get_body('moon', time, location)
+        sun = get_body('sun', time, location)
+        return 180.0 * u.deg - moon.separation(sun)
+
+    @staticmethod
     def phase_law(phase: u.Quantity) -> float:
         """
         How many magnitudes fainter than full the moon is at phase angle `phase`.
@@ -193,8 +213,7 @@ class Moonlight(Emission):
         if moon.alt.radian <= 0:
             return np.zeros_like(np.asarray(alt, dtype=float))
 
-        sun = get_body('sun', self.time, self.location)
-        phase = get_body('moon', self.time, self.location).separation(sun)
+        phase = self.phase_angle(self.location, self.time)
 
         # What reaches the air above us, the moon's own air mass having taken its share on the way in
         incident = self.illuminance(phase) * airmass.transmittance(self.extinction, moon.alt.radian)
