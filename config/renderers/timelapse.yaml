@@ -20,8 +20,9 @@ detector:
   yres: 1200
   # The frame, and how much of it the shutter is open for. 20 frames a second, and an exposure a
   # little shorter than the interval, as a real camera has.
-  # Ten minutes between frames rather than a frame rate: see `interval` in render.py.
-  interval: 600             # [s] between frames
+  # Two minutes between frames rather than a frame rate: see `interval` in render.py. 240 of them
+  # covers eight hours, and at thirty frames a second that is eight seconds of video.
+  interval: 120             # [s] between frames
   # Three tenths of a second, where default.yaml has 40 ms. Nothing here moves fast enough to care --
   # stars trail 0.01 px, the Moon 0.15 arcseconds -- so the exposure is free to set how grainy a frame
   # is, and it is the honest knob for it: the graininess of a photon-starved frame *is* its photon

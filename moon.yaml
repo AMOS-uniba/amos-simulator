@@ -1,11 +1,11 @@
-# A night with nothing in it but the sky.
+# A night over AGO: eight hours, from the last of the twilight to well after the Moon has set.
 #
-# No meteor, one frame every ten minutes, from the end of twilight until the Moon sets. On
-# 2025-10-01 from AGO the Moon is above the horizon from 14:30 to 22:20 UT and the Sun is more than
-# twelve degrees down from 17:40, which leaves four hours and forty minutes: the Moon starts due
-# south at its highest, 16.0 degrees, and slides down to the west-south-west horizon.
+# Starts at 17:25 UT on 2025-10-01, when the Sun is ten degrees down -- so the first frames are
+# nautical twilight, which an intensified camera meets by turning its gain to the floor and washing
+# out anyway, as a station's do. The Moon is 15 degrees up and 68% lit at the start, sets in the
+# west-south-west at 22:20, and the last three hours are a moonless sky.
 #
-# It never gets high that night -- a gibbous Moon 111 degrees from the Sun, low in the south. For a
-# steep arc across the middle of the frame, pick a first-quarter Moon in winter instead.
-start: "2025-10-01T17:40:00"
-count: 28
+# One frame every two minutes for 240 of them, which is eight hours; at thirty frames a second that
+# plays in eight seconds.
+start: "2025-10-01T17:25:00"
+count: 239
