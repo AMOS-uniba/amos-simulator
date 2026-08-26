@@ -50,8 +50,11 @@ class Scene:
         self.detector = detector if detector is not None else Detector()
         # The point spread function, as a width in the middle of the field and one at the rim.
         psf = dict(psf or {})
-        self.sigma_centre = psf.get('fwhm_centre', 2.4) / 2.3548
-        self.sigma_edge = psf.get('fwhm_edge', 3.6) / 2.3548
+        self.sigma_centre = psf.get('fwhm_centre', 1.8) / 2.3548
+        self.sigma_edge = psf.get('fwhm_edge', 2.2) / 2.3548
+        # The halo: a second, broad component carrying a few percent of the light. See add_points.
+        self.halo_fraction = psf.get('halo_fraction', 0.03)
+        self.sigma_halo = psf.get('halo_fwhm', 12.0) / 2.3548
         self.subsamples = int(subsamples)
         self.xres = xres
         self.yres = yres
@@ -278,6 +281,21 @@ class Scene:
     #: a power-law wing; modelling one means a second, broad PSF component, not a bigger number here.
     TRUNCATE_MAX = 20.0
 
+    def halo_truncation(self, flux: float) -> float:
+        """
+        How far the halo is worth drawing, or zero when it cannot light a pixel anywhere.
+
+        Faint stars never show one, so they keep a small patch and their three percent is normalised
+        into the core -- three percent of the light moved a couple of pixels, inside any aperture
+        anybody would measure with.
+        """
+        peak = flux * self.halo_fraction / (2.0 * np.pi * self.sigma_halo ** 2)
+        floor = self.detector.smallest_flux
+        if not np.isfinite(peak) or peak <= floor:
+            return 0.0
+        return float(min(self.sigma_halo * np.sqrt(2.0 * np.log(peak / floor)),
+                         self.TRUNCATE_MAX * self.sigma_halo))
+
     def truncation(self, flux: float, sigma: float) -> float:
         """
         How far from a source to keep drawing it, in pixels.
@@ -338,17 +356,29 @@ class Scene:
         sigmas = self.psf_sigma(nx, ny)
 
         for xi, yi, ii, si in zip(nx, ny, intensities, sigmas):
-            rad = int(np.ceil(self.truncation(ii, si)) + 1)
+            rad = int(np.ceil(max(self.truncation(ii, si), self.halo_truncation(ii))) + 1)
             xmin, xmax = max(0, int(np.floor(xi)) - rad), min(self.xres, int(np.floor(xi)) + rad + 1)
             ymin, ymax = max(0, int(np.floor(yi)) - rad), min(self.yres, int(np.floor(yi)) + rad + 1)
             if xmin >= xmax or ymin >= ymax:
                 continue
 
-            # Separable, since a circular Gaussian is: the fraction of the source in each column
-            # times the fraction in each row.
-            gx = self.pixel_gaussian(xi, xmin, xmax - 1, si)
-            gy = self.pixel_gaussian(yi, ymin, ymax - 1, si)
-            g = np.outer(gy, gx)
+            # Two components, both separable and both integrated over the pixel: a narrow core, and
+            # a broad halo carrying `halo_fraction` of the light.
+            #
+            # Which is what a real star looks like. One Gaussian cannot be both sharp in the middle
+            # and extended at the edges, so a single one has to be widened until its skirts look
+            # right -- and then every star is hazy. Splitting them lets the core go down to the
+            # sampling limit while the light that a real lens scatters into a glow stays in the
+            # glow. It is also better photometry: a narrow core saturates a smaller area, and what
+            # is outside an aperture is a fixed few percent rather than a function of the width.
+            core = np.outer(self.pixel_gaussian(yi, ymin, ymax - 1, si),
+                            self.pixel_gaussian(xi, xmin, xmax - 1, si))
+            if self.halo_fraction > 0:
+                halo = np.outer(self.pixel_gaussian(yi, ymin, ymax - 1, self.sigma_halo),
+                                self.pixel_gaussian(xi, xmin, xmax - 1, self.sigma_halo))
+                g = (1.0 - self.halo_fraction) * core + self.halo_fraction * halo
+            else:
+                g = core
 
             # Normalise to unit flux and give it the source's own -- normalised after truncation, so
             # a star at the very edge of the frame keeps all of the light that landed on the sensor.

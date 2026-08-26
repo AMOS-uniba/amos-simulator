@@ -49,8 +49,14 @@ detector:
 # real all-sky lens is soft towards the rim and that is all this says. Do not go below about 2:
 # anything narrower puts a faint star inside one pixel, where the pixel grid decides its centroid.
 psf:
-  fwhm_centre: 2.4
-  fwhm_edge: 3.6
+  # A narrow core and a faint broad halo: one Gaussian cannot be sharp in the middle and extended at
+  # the edges, so a single one has to be widened until its skirts look right and then every star is
+  # hazy. Do not take the core below about 1.7 -- under that the profile is undersampled and a
+  # centroid depends on where inside a pixel the light fell.
+  fwhm_centre: 1.8
+  fwhm_edge: 2.2
+  halo_fraction: 0.03       # of the light, in the wing
+  halo_fwhm: 12
 
 # How many times inside one exposure the meteor is drawn. It moves tens of pixels while the shutter
 # is open, so one sample per frame renders a dot where a real camera records a streak. The stars and

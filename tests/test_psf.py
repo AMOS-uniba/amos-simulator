@@ -175,6 +175,12 @@ class TestTheExposure:
 
 
 class TestHowFarASourceIsDrawn:
+    @staticmethod
+    def source_at(alt, az, flux):
+        from astropy.coordinates import Angle
+        from astropy.units import Quantity
+        return Angle([alt] * u.deg), Angle([az] * u.deg), Quantity([flux], u.W / u.m ** 2)
+
     """
     The truncation radius follows the brightness, which is what makes a saturated blob's size a
     property of the source rather than of a constant in the code.
@@ -204,19 +210,36 @@ class TestHowFarASourceIsDrawn:
         assert sun == pytest.approx(8.14, abs=0.2)
         assert sun < 1.5 * moon
 
-    def test_the_moon_makes_a_disc_a_dozen_pixels_across(self):
+    def test_the_moon_makes_a_disc_with_a_glow_around_it(self):
         """
         Half a degree at this plate scale is 4.4 pixels of Moon, which saturates by five orders of
-        magnitude, so what is drawn is a solid disc about fourteen pixels across: the disc, plus as
-        much of the PSF as can still light one pixel.
+        magnitude. The bright core is the disc plus as much of the *core* profile as can light a
+        pixel -- a dozen or so pixels -- and around it the halo carries its three percent out to
+        several tens, which is what a real Moon does to a frame.
         """
-        s = scene(psf={'fwhm_centre': 2.4, 'fwhm_edge': 3.6})
+        s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2,
+                       'halo_fraction': 0.03, 'halo_fwhm': 12.0})
         s.add_moon()
         assert s.data.sum() > 0
 
-        lit = s.data >= s.detector.smallest_flux
-        width = lit.any(axis=0).sum()
-        assert 8 < width < 40, f"a disc {width} px across is not the Moon"
+        floor = s.detector.smallest_flux
+        lit = s.data >= floor
+        # The core is what would fill the well: one count is `floor`, so the top of the range is 256
+        saturated = s.data >= 256 * floor
+        core, glow = saturated.any(axis=0).sum(), lit.any(axis=0).sum()
+        assert 20 < core < 55, f"a core {core} px across is not the Moon"
+        assert glow > core, f"the glow should reach past the core, {glow} against {core}"
+
+    def test_and_the_halo_is_only_a_few_percent_of_its_light(self):
+        """ The core has to keep the photometry: the glow is a wing, not half the star. """
+        s = scene(psf={'fwhm_centre': 1.8, 'fwhm_edge': 2.2,
+                       'halo_fraction': 0.03, 'halo_fwhm': 12.0})
+        s.add_points(*self.source_at(60.0, 100.0, 1e-9))
+        total = s.data.sum()
+        ys, xs = np.nonzero(s.data)
+        cy, cx = int(np.median(ys)), int(np.median(xs))
+        inside = s.data[cy - 4:cy + 5, cx - 4:cx + 5].sum()
+        assert inside / total == pytest.approx(0.97, abs=0.03)
 
     def test_and_all_of_its_light_is_on_the_frame(self):
         """ Five hundred and twelve samples, each with its share, and nothing lost between them. """
