@@ -212,24 +212,53 @@ class Moonlight(Emission):
 
 class Sunlight(Emission):
     """
-    Twilight: the sun below the horizon, its light still scattered into the frame.
+    Twilight: the Sun below the horizon, its light still scattered into the frame.
 
-    The formula is left as this file inherited it, and it is crude on purpose -- an exponential in
-    altitude times a Gaussian in distance from the sun, with no defence beyond looking approximately
-    right.
+    Now in the same currency as everything else -- a surface brightness in magnitudes per square
+    arcsecond -- which is what makes it possible to say how bright it should be. It used to be a bare
+    `25 * exp(-alt * 5) * exp(-dist**2) * intensity`, and those constants were tuned against a scene
+    whose gain was an arbitrary 1e13; read as W/m2 per pixel they came to 4.7e-3 against a dark sky's
+    3.8e-12, so switching the term on saturated every pixel of every frame.
 
-    **Its constants are in no unit at all**, and that is why `sun: false` is the default in
-    config/renderers. They were chosen against a scene whose gain was an arbitrary 1e13; read as
-    W/m² per pixel they come to 4.7e-3 against a dark sky's 3.8e-12, which saturates every pixel in
-    the frame. Simulations run in the dark, so nothing is lost by leaving it off, and the day it
-    matters it wants a real twilight model quoting a surface brightness -- not a correction factor
-    on this one.
+    Two numbers now, both configured: the peak surface brightness when the Sun is twelve degrees
+    down, and how fast it fades as the Sun sinks further. The defaults put twilight two magnitudes
+    above a dark sky at -12 and level with it by -18, so it is plain to see across nautical twilight
+    and gone by the end of astronomical twilight.
+
+    **That fade is gentler than the sky's.** Real twilight falls off at closer to a magnitude per
+    degree of depression, which over six degrees is a factor of 250 -- overwhelming at one end of the
+    band or invisible at the other, whichever end one anchors. 0.4 keeps the whole band worth
+    looking at. Steepen `fade` for realism at the cost of a usable range.
+
+    The shape is inherited unchanged: an exponential in altitude times a Gaussian in distance from
+    the Sun, so it is brightest at the horizon in the Sun's direction. It has no defence beyond
+    looking approximately right, and outside twilight it is extrapolation -- with the Sun up, this
+    happily returns a daylit sky, which for a meteor camera is a white frame, correctly.
     """
+    #: The depression the configured brightness refers to, in degrees. The end of nautical twilight,
+    #: which is where a station's night begins.
+    REFERENCE = 12.0
+
+    def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
+        #: Peak surface brightness at REFERENCE degrees of depression, in mag/arcsec2
+        self.brightness = kwargs.pop('brightness', 19.5)
+        #: Magnitudes fainter per further degree of depression
+        self.fade = kwargs.pop('fade', 0.4)
+        super().__init__(location, time, **kwargs)
+
+    def peak_brightness(self, depression: float) -> float:
+        """ The surface brightness at the brightest point of the sky, in mag/arcsec2. """
+        return self.brightness + self.fade * (depression - self.REFERENCE)
+
     def radiance(self,
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
         sun = self.body_altaz('sun')
+        peak = brightness.flux_from_surface_brightness(
+            self.peak_brightness(-sun.alt.degree), self.pixel_solid_angle)
+
         distance = self.angular_distance(alt, az, sun)
-        intensity = (10 * (0.8 * np.sin(sun.alt) + 0.2) if sun.alt >= 0
-                     else 0.1 * np.exp(sun.alt.radian * 10))
-        return 25 * np.exp(-alt * 5) * np.exp(-distance ** 2) * intensity
+        # Unity at the horizon in the Sun's direction and falling away from it, both in altitude and
+        # in azimuth, which is the one thing the old formula got right
+        shape = np.exp(-np.asarray(alt, dtype=float) * 5.0) * np.exp(-distance ** 2)
+        return peak * shape

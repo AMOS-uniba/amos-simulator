@@ -13,7 +13,7 @@ from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
 from effects import airmass, brightness
-from effects.sky import Airglow, Emission, Extinction, Moonlight
+from effects.sky import Airglow, Emission, Extinction, Moonlight, Sunlight
 
 WHERE = EarthLocation(17.273933 * u.deg, 48.372763 * u.deg, 580.0 * u.m)
 
@@ -188,3 +188,57 @@ class TestTheMoonAsABody:
             magnitude = Moonlight.magnitude(phase * u.deg)
             illuminance = Moonlight.illuminance(phase * u.deg)
             assert -2.5 * np.log10(illuminance) - magnitude == pytest.approx(3.84 + 12.73, abs=1e-9)
+
+
+class TestTwilight:
+    """
+    The one term whose constants were in no unit at all, now a surface brightness like the others.
+    Its scale is set by what it has to look like across nautical twilight, which is a choice, and the
+    docstring says so.
+    """
+    def source(self, **kwargs):
+        return Sunlight(WHERE, MOONLIT, pixel_solid_angle=PIXEL, **kwargs)
+
+    def test_the_reference_depression_is_what_it_says(self):
+        assert self.source().peak_brightness(12.0) == pytest.approx(19.5)
+
+    def test_it_fades_as_the_sun_sinks(self):
+        s = self.source()
+        assert s.peak_brightness(15.0) == pytest.approx(20.7)
+        assert s.peak_brightness(18.0) == pytest.approx(21.9)
+
+    def test_visible_at_minus_twelve_and_gone_by_minus_eighteen(self):
+        """
+        What the numbers were chosen for: eight times a dark sky at the end of nautical twilight, and
+        level with it -- so invisible -- by the end of astronomical.
+        """
+        s = self.source()
+        dark = 21.8
+        assert 5 < 10 ** (0.4 * (dark - s.peak_brightness(12.0))) < 15
+        assert 10 ** (0.4 * (dark - s.peak_brightness(18.0))) < 1.2
+
+    def test_a_steeper_fade_is_the_realistic_one_and_unusable(self):
+        """
+        Real twilight falls off near a magnitude a degree. Over the six degrees of nautical twilight
+        that is a factor of 250, which cannot be both visible at one end and subtle at the other --
+        which is why the default is gentler, deliberately.
+        """
+        real = self.source(fade=1.0)
+        span = 10 ** (0.4 * (real.peak_brightness(18.0) - real.peak_brightness(12.0)))
+        assert span > 200
+
+    def test_it_is_brightest_at_the_horizon_towards_the_sun(self):
+        s = self.source()
+        sun = s.body_altaz('sun')
+        towards = grid([2.0], azimuth=sun.az.degree)
+        away = grid([2.0], azimuth=(sun.az.degree + 180) % 360)
+        overhead = grid([88.0], azimuth=sun.az.degree)
+        assert one(s.radiance(*towards)) > 100 * one(s.radiance(*away))
+        assert one(s.radiance(*towards)) > 100 * one(s.radiance(*overhead))
+
+    def test_and_it_scales_with_the_configured_brightness(self):
+        alt, az = grid([2.0], azimuth=279.0)
+        bright = self.source(brightness=18.5)
+        faint = self.source(brightness=19.5)
+        assert one(bright.radiance(alt, az)) == pytest.approx(10 ** 0.4 * one(faint.radiance(alt, az)),
+                                                             rel=1e-6)

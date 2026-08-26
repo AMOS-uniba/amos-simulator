@@ -133,9 +133,11 @@ class Scene:
         ]
         if self.sky.get('moon', True):
             sources.append(Moonlight(self.location, self.time, **common))
-        # Off by default, and the class says why: its constants are in no unit.
         if self.sky.get('sun', False):
-            sources.append(Sunlight(self.location, self.time, **common))
+            dusk = self.sky.get('twilight', {})
+            sources.append(Sunlight(self.location, self.time, **common,
+                                    brightness=dusk.get('brightness', 19.5),
+                                    fade=dusk.get('fade', 0.4)))
         return sources
 
     def add_emission(self) -> None:
