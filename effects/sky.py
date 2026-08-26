@@ -24,7 +24,7 @@ from astropy.coordinates import EarthLocation, get_body, AltAz
 from astropy.time import Time
 import astropy.units as u
 
-from effects import airmass
+from effects import airmass, brightness
 
 
 class SkyEffect:
@@ -40,6 +40,9 @@ class SkyEffect:
         self.time = time if time is not None else Time.now()
         self.altaz = AltAz(obstime=self.time, location=self.location)
         self.extinction = kwargs.pop('extinction', airmass.EXTINCTION)
+        # How much sky one pixel sees, in square arcseconds. Anything quoting a surface brightness
+        # needs it; the scene measures it off the projection and hands it down.
+        self.pixel_solid_angle = kwargs.pop('pixel_solid_angle', 1.794e5)
 
     @abstractmethod
     def __call__(self,
@@ -115,15 +118,17 @@ class Airglow(Emission):
     backwards.
     """
     def __init__(self, location: EarthLocation, time: Optional[Time] = None, **kwargs):
-        self.intensity = kwargs.pop('intensity', 0.0)
+        #: Zenith surface brightness, in magnitudes per square arcsecond
+        self.brightness = kwargs.pop('brightness', 21.8)
         self.height = kwargs.pop('height', airmass.AIRGLOW_HEIGHT)
         super().__init__(location, time, **kwargs)
 
     def radiance(self,
                  alt: ArrayLike,
                  az: ArrayLike) -> ArrayLike:
+        zenith = brightness.flux_from_surface_brightness(self.brightness, self.pixel_solid_angle)
         layer = airmass.van_rhijn(alt, height=self.height)
-        return self.intensity * layer * airmass.transmittance(self.extinction, alt)
+        return zenith * layer * airmass.transmittance(self.extinction, alt)
 
 
 class Moonlight(Emission):
@@ -171,7 +176,14 @@ class Moonlight(Emission):
 
         distance = self.angular_distance(alt, az, moon)
         tau = airmass.optical_depth(self.extinction, airmass.kasten_young(alt))
-        return airmass.slab_radiance(self.scattering(distance) * incident, tau)
+
+        # Krisciunas & Schaefer work in nanolamberts from end to end, and this is where that stops:
+        # a surface brightness, then the flux a pixel of this camera receives from it. Adding their
+        # constants straight into a flux array was what saturated every frame once the gain became a
+        # real number of electrons rather than 1e13.
+        nanolamberts = airmass.slab_radiance(self.scattering(distance) * incident, tau)
+        magnitudes = brightness.magnitude_from_nanolamberts(np.maximum(nanolamberts, 1e-6))
+        return brightness.flux_from_surface_brightness(magnitudes, self.pixel_solid_angle)
 
 
 class Sunlight(Emission):
@@ -180,8 +192,14 @@ class Sunlight(Emission):
 
     The formula is left as this file inherited it, and it is crude on purpose -- an exponential in
     altitude times a Gaussian in distance from the sun, with no defence beyond looking approximately
-    right. Simulations run in the dark, so it is the least consequential term here; the day it
-    matters it wants a real twilight model rather than a correction to this one.
+    right.
+
+    **Its constants are in no unit at all**, and that is why `sun: false` is the default in
+    config/renderers. They were chosen against a scene whose gain was an arbitrary 1e13; read as
+    W/m² per pixel they come to 4.7e-3 against a dark sky's 3.8e-12, which saturates every pixel in
+    the frame. Simulations run in the dark, so nothing is lost by leaving it off, and the day it
+    matters it wants a real twilight model quoting a surface brightness -- not a correction factor
+    on this one.
     """
     def radiance(self,
                  alt: ArrayLike,

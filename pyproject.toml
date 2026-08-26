@@ -24,3 +24,7 @@ dev = [
     "ipython>=9.15.0",
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+# tests/ is a package, which is what puts the repository root on the path rather than tests/ itself
+testpaths = ["tests"]

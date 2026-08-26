@@ -25,6 +25,7 @@ from demeteor.projections.shifters import ScalingShifter
 
 from models.observer import Observer
 from models.skypointsource import SkyPointSource
+from models.detector import Detector
 from models.scene import Scene
 
 
@@ -87,16 +88,23 @@ class MeteorRenderer(Scalyca):
 
     def main(self):
         self.t0 = Time(self.config.start)
-        self.dt = 0.05 * u.s
+        # The frame interval, from the camera rather than from a literal. It has to agree with the
+        # frame rate ffmpeg is given in the Makefile, and with the exposure the detector integrates
+        # over, so it is one number in one file.
+        self.dt = (1.0 / self.camera.detector.get('fps', 20)) * u.s
         self.times = self.t0 + np.arange(-self.camera.padding.start / self.dt,
                                          self.config.count + 1 + self.camera.padding.end / self.dt) * self.dt
 
-        # .toDict() because a DotMap of the sky settings has to survive being pickled to a worker
+        # .toDict() because these have to survive being pickled to a worker
         sky = self.camera.sky.toDict() if 'sky' in self.camera else {}
+        psf = self.camera.psf.toDict() if 'psf' in self.camera else {}
+        subsamples = self.camera.get('subsamples', 1)
+        detector = Detector(optics=self.camera.get('optics', {}).toDict() if 'optics' in self.camera else {},
+                            detector=self.camera.detector.toDict())
         args = [(self.camera.detector.xres, self.camera.detector.yres,
                  self.projection, self.scaler,
                  self.observer.location, self.catalogue, self.fragments, i, time, self.output_dir,
-                 sky)
+                 sky, detector, psf, subsamples)
                 for i, time in enumerate(self.times)]
         pool = Pool(self.config.cores)
         log.info(f"Rendering {len(self.fragments)} fragment(s) at {len(self.times)} times "
@@ -112,19 +120,20 @@ def render(xres: int, yres: int,
            fragments: list[SkyPointSource],
            i, timestamp: Time,
            directory: Path,
-           sky: dict) -> int:
+           sky: dict,
+           detector: Detector,
+           psf: dict,
+           subsamples: int) -> int:
 
     # This is needed so that noise is not generated using the same seed across workers
     np.random.seed((os.getpid() * int(time.time())) % 123456789)
 
     scene = Scene(xres, yres, projection=projection, scaler=scaler, location=location,
-                  catalogue=catalogue, time=timestamp, sky=sky)
+                  catalogue=catalogue, time=timestamp, sky=sky, detector=detector,
+                  psf=psf, subsamples=subsamples)
     scene.build(fragments)
-
-    scene.render_as_poisson()
-    scene.add_intensifier_noise(100, 10, radius=70)
-    scene.add_thermal_noise(rate=40)
-
+    # The shot noise, the dark current, the intensifier and the readout all live in the detector
+    # now, in electrons, where the three calls that used to be here had arbitrary units.
     scene.render(directory / f'{i:03}.png')
     return 1
 

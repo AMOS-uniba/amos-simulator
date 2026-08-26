@@ -4,14 +4,58 @@ pixels:
   xs: 4.4                   # Pixel width in µm
   ys: 4.4                   # Pixel height in µm
 
+# The lens, and what reaches the photocathode through it. Together with the exposure below, these
+# four numbers are what `Scene.gain = 1e13` used to stand in for: a flux in W/m2 becomes a number of
+# photoelectrons, and every noise term further down is then in electrons and can be argued about.
+optics:
+  aperture: 4.3             # Entrance pupil diameter [mm]: a 6 mm fisheye at f/1.4
+  qe: 0.20                  # Photocathode quantum efficiency at the effective wavelength
+  wavelength: 550           # Effective wavelength [nm], which sets the energy per photon
+
 detector:
   xres: 1600
   yres: 1200
-  noise:
-    distribution: 'normal'
-    parameters:
-      sigma: 3
-      mean: 10
+  # The frame, and how much of it the shutter is open for. 20 frames a second, and an exposure a
+  # little shorter than the interval, as a real camera has.
+  fps: 20
+  exposure: 0.04            # [s]
+  # Everything below is in electrons, which is the only place the numbers can be compared with a
+  # datasheet. dark is a rate, so it scales with the exposure; read_noise and bias do not.
+  # Photocathode thermionic emission, and the readout behind the intensifier. `dark` and `glow` are
+  # rates at the photocathode, so they are photoelectrons and get amplified with the signal;
+  # `read_noise` and `bias` are at the output, after the gain, which is why they are large numbers
+  # and why they matter so little. This is the point of an intensifier: one photoelectron leaves the
+  # readout far above its noise, so the frame is photon-starved rather than read-noise limited.
+  dark: 5                   # [e-/s/pixel] at the photocathode
+  read_noise: 200           # [e- rms] at the output
+  bias: 500                 # [e-] at the output, the pedestal a readout sits on
+  full_well: 128000         # [e-] at the output: about thirteen photoelectrons, so it saturates easily
+  bits: 8                   # Output depth; the video and Kvant both want 8
+  # The AMOS intensifier: a multiplicative stage with noise of its own. `gain` multiplies the signal,
+  # `excess_noise` is the factor by which its variance exceeds Poisson -- around two for an MCP -- and
+  # `glow` is the haze it adds in the middle of the field, falling off over `glow_radius` pixels.
+  #
+  # gain and full_well only ever appear as a ratio: with these two, one photoelectron is twenty of
+  # the 255 counts, which puts a dark zenith sky near twenty-five and leaves a V=6 star visible above
+  # it. Those are the numbers to turn when a rendered frame is to be matched against a real one.
+  intensifier:
+    gain: 10000
+    excess_noise: 2.0
+    glow: 20                # [e-/s/pixel] at the photocathode, at the centre of the field
+    glow_radius: 70         # [pixels]
+
+# How a point source lands on the sensor: the full width at half maximum in the middle of the field
+# and at the edge of the circle, in pixels, interpolated linearly in radius. At these field angles a
+# real all-sky lens is soft towards the rim and that is all this says. Do not go below about 2:
+# anything narrower puts a faint star inside one pixel, where the pixel grid decides its centroid.
+psf:
+  fwhm_centre: 2.4
+  fwhm_edge: 3.6
+
+# How many times inside one exposure the meteor is drawn. It moves tens of pixels while the shutter
+# is open, so one sample per frame renders a dot where a real camera records a streak. The stars and
+# the sky are built once, at mid-exposure: they move well under a pixel in 40 ms.
+subsamples: 8
 
 padding:
   start: 0.5
@@ -23,11 +67,14 @@ padding:
 # both jobs.
 sky:
   extinction: 0.145
-  # The airglow layer: `intensity` is what it shines at the zenith, in the scene's flux units, and
-  # `height` is where it lives. 90 km is the mesopause, and the height sets how much brighter the
-  # horizon is than the zenith -- about six times the path, before extinction takes most of it back.
+  # The airglow layer: how bright the sky is at the zenith, in magnitudes per square arcsecond, and
+  # where the layer lives. 21.8 is a dark rural sky, 20.5 a village, 18 a city; the height is the
+  # mesopause and sets how much brighter the horizon is than the zenith -- about six times the path,
+  # before extinction takes most of it back. It used to read `intensity: 100`, in no unit at all,
+  # which was a number tuned against a gain of 1e13 rather than anything measurable.
   airglow:
-    intensity: 100
+    brightness: 21.8
     height: 90
   moon: true
-  sun: true
+  # Off: the twilight term's constants are in no unit -- see effects/sky.py:Sunlight
+  sun: false

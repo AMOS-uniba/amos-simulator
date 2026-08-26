@@ -33,18 +33,30 @@ AIRGLOW_HEIGHT = 90.0
 EXTINCTION = 0.145
 
 
+def _kasten_young(zenith_deg: ArrayLike) -> ArrayLike:
+    """ Kasten & Young (1989) as published, with the zenith angle in degrees. """
+    return 1.0 / (np.cos(np.radians(zenith_deg)) + 0.50572 * (96.07995 - zenith_deg) ** -1.6364)
+
+
+#: What the formula answers looking straight up: 0.99971, not 1. Its second term does not vanish at
+#: the zenith, so it is normalised below -- a correction of three parts in ten thousand, far inside
+#: the formula's own accuracy, and worth making because it is what lets an extinction coefficient
+#: mean what an observer means by it: magnitudes lost looking straight up, exactly.
+ZENITH = _kasten_young(0.0)
+
+
 def kasten_young(alt: ArrayLike) -> ArrayLike:
     """
-    Air mass at altitude `alt` (radians), after Kasten & Young (1989).
+    Air mass at altitude `alt` (radians), after Kasten & Young (1989), normalised at the zenith.
 
-    Exact enough to be the only one: 1.000 at the zenith, 1.154 at sixty degrees, 5.586 at ten,
-    37.920 at the horizon. Below the horizon the zenith angle is clamped, both because the formula's
-    `(96.07995 - z)**-1.6364` turns into a negative base a few degrees down and because nothing is
-    drawn there anyway -- an effect that reaches below the horizon has already asked the wrong
-    question.
+    Exact enough to be the only one: 1.000 at the zenith by construction, 1.154 at sixty degrees,
+    5.588 at ten, 37.93 at the horizon. Below the horizon the zenith angle is clamped, both because
+    the formula's `(96.07995 - z)**-1.6364` turns into a negative base a few degrees down and because
+    nothing is drawn there anyway -- an effect that reaches below the horizon has already asked the
+    wrong question.
     """
     zenith = np.clip(90.0 - np.degrees(alt), 0.0, 90.0)
-    return 1.0 / (np.cos(np.radians(zenith)) + 0.50572 * (96.07995 - zenith) ** -1.6364)
+    return _kasten_young(zenith) / ZENITH
 
 
 def van_rhijn(alt: ArrayLike,
