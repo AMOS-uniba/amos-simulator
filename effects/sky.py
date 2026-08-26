@@ -153,13 +153,37 @@ class Moonlight(Emission):
         """
         return 10 ** 5.36 * (1.06 + np.cos(distance) ** 2) + 10 ** (6.15 - np.degrees(distance) / 40)
 
+    #: The full moon, in V. The phase law below is written once and used with two zero points: this
+    #: one for the magnitude of the body itself, and Krisciunas & Schaefer's 3.84 for the illuminance
+    #: their scattering model is built in. The 16.57 magnitudes between them are the conversion from
+    #: their photometric units to a flux, and having both here is what keeps them consistent.
+    FULL = -12.73
+
     @staticmethod
-    def illuminance(phase: u.Quantity) -> float:
+    def phase_law(phase: u.Quantity) -> float:
         """
-        The moon's own brightness at phase angle `phase`, greatest at full and falling steeply.
+        How many magnitudes fainter than full the moon is at phase angle `phase`.
+
+        Krisciunas & Schaefer (1991): 0.026 per degree, plus a quartic that only matters near new.
+        Zero at full, 2.6 at quarter, 5.4 at a thin crescent.
         """
         alpha = float(np.abs(phase.to(u.deg).value))
-        return 10 ** (-0.4 * (3.84 + 0.026 * alpha + 4e-9 * alpha ** 4))
+        return 0.026 * alpha + 4e-9 * alpha ** 4
+
+    @classmethod
+    def illuminance(cls, phase: u.Quantity) -> float:
+        """
+        The moon's own brightness at phase angle `phase`, in the units the scattering model wants.
+        """
+        return 10 ** (-0.4 * (3.84 + cls.phase_law(phase)))
+
+    @classmethod
+    def magnitude(cls, phase: u.Quantity) -> float:
+        """
+        The moon's apparent visual magnitude at phase angle `phase`: -12.73 at full, -10.1 at
+        quarter, -9.3 for the gibbous moon of 2025-10-01.
+        """
+        return cls.FULL + cls.phase_law(phase)
 
     def radiance(self,
                  alt: ArrayLike,

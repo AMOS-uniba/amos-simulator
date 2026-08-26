@@ -10,7 +10,7 @@ from PIL import Image
 from scipy.special import erf
 
 import astropy.units as u
-from astropy.coordinates import EarthLocation
+from astropy.coordinates import AltAz, Angle, EarthLocation, get_body
 from astropy.time import Time
 
 from demeteor.projections import BorovickaProjection, Projection
@@ -22,6 +22,10 @@ from models.skypointsource import SkyPointSource
 
 u.Wm2 = u.W / u.m**2
 u.ms = u.m / u.s
+
+#: The Moon's radius in metres, which with its distance gives the angular size astropy does not
+#: hand over directly.
+MOON_RADIUS = 1737_400.0
 
 
 class Scene:
@@ -84,6 +88,8 @@ class Scene:
         logging.info(f"Building a scene ({self.xres}x{self.yres}) at {self.time}")
 
         self.add_stars()
+        if self.sky.get('moon', True):
+            self.add_moon()
         self.add_fragments(fragments, exposure=self.detector.exposure * u.s,
                            subsamples=self.subsamples)
         self.attenuate()
@@ -164,6 +170,50 @@ class Scene:
         ints = self.vmag_to_intensity(self.catalogue.vmag(self.location, self.time, masked=True))
         self.add_points(altaz.alt, altaz.az, ints)
 
+    def add_moon(self, samples: int = 512) -> None:
+        """
+        The Moon itself, as a disc rather than a dot.
+
+        Its brightness is the same phase law the scattered-light model uses, with the zero point of
+        the body instead of the one of Krisciunas & Schaefer's illuminance -- -12.73 at full, -9.25
+        for the gibbous moon of 2025-10-01. Its size comes from its distance, which astropy hands
+        over with the position: half a degree across, which at this plate scale is four pixels, so it
+        is worth resolving.
+
+        The disc is sampled on a sunflower spiral, which covers an area evenly without a preferred
+        direction, and each sample carries its share of the flux through `add_points` -- so the Moon
+        gets the same PSF as every star and the same extinction as everything else outside the
+        atmosphere. **The phase is in the brightness and not in the shape**: the terminator across
+        four pixels is a pixel of difference under a 2.4 pixel PSF, and the whole disc saturates by
+        five orders of magnitude anyway. A plate scale fine enough to show a crescent wants the lit
+        fraction masked here, and this is where that would go.
+        """
+        moon = get_body('moon', self.time, self.location).transform_to(
+            AltAz(obstime=self.time, location=self.location))
+        if moon.alt.radian <= 0:
+            return
+
+        phase = get_body('moon', self.time, self.location).separation(
+            get_body('sun', self.time, self.location))
+        flux = brightness.flux_from_magnitude(Moonlight.magnitude(phase))
+        radius = np.arctan2(MOON_RADIUS, moon.distance.to(u.m).value)
+
+        # A sunflower spiral: r proportional to sqrt(k) spaces the samples by equal area, and the
+        # golden angle keeps them from lining up into spokes.
+        k = np.arange(samples) + 0.5
+        r = radius * np.sqrt(k / samples)
+        theta = k * np.pi * (3.0 - np.sqrt(5.0))
+
+        # Offsets on the local tangent plane. Azimuth converges towards the zenith, hence the cosine;
+        # the Moon is never near enough to it for that to be delicate.
+        alt = moon.alt.radian + r * np.cos(theta)
+        az = moon.az.radian + r * np.sin(theta) / np.cos(moon.alt.radian)
+
+        logging.info(f"The Moon: V = {Moonlight.magnitude(phase):.2f} at phase "
+                 f"{phase.to(u.deg).value:.1f} deg, radius {np.degrees(radius) * 60:.1f} arcmin")
+        self.add_points(Angle(alt * u.rad), Angle(az * u.rad),
+                        u.Quantity(np.full(samples, flux / samples), u.W / u.m ** 2))
+
     def add_fragments(self, fragments: list[SkyPointSource], exposure=None, subsamples: int = 1):
         """
         Draw the meteor as it was over the whole exposure, not as it was at one instant.
@@ -214,6 +264,38 @@ class Scene:
         fraction = np.clip(distance / radius, 0.0, 1.0)
         return (self.sigma_centre + (self.sigma_edge - self.sigma_centre) * fraction)
 
+    #: How far out a profile is drawn at least, in units of sigma. Five puts 1e-6 of the flux
+    #: outside, which is below anything a pixel can hold for an ordinary star.
+    TRUNCATE = 5.0
+
+    #: And at most -- a bound on the loop's cost, which in practice never binds. A Gaussian falls so
+    #: steeply that brightness barely buys radius: the gibbous Moon asks for 5.8 sigma and the Sun,
+    #: thirty million times brighter, for 8.1. **That is the finding, not the constant**: a factor of
+    #: 3e7 in flux buys 1.4 in radius, so a saturated blob's size hardly depends on the source and
+    #: bloom does not follow from brightness alone. A real halo is scattered light in the glass, with
+    #: a power-law wing; modelling one means a second, broad PSF component, not a bigger number here.
+    TRUNCATE_MAX = 20.0
+
+    def truncation(self, flux: float, sigma: float) -> float:
+        """
+        How far from a source to keep drawing it, in pixels.
+
+        Not a constant times sigma. A saturated source is saturated out to wherever its profile last
+        exceeds a pixel's smallest step, and that radius grows with brightness -- which is what makes
+        the Moon a disc a dozen pixels across and a faint star three. With a fixed five sigma the size
+        of the Moon's blob would be set by that constant rather than by the Moon.
+
+        Still a Gaussian, so the edge is sharper than a real one: the halo around a real full Moon is
+        scattered light in the glass and falls off as a power law. That wants a second, broad
+        component in the PSF, and this is not it.
+        """
+        peak = flux / (2.0 * np.pi * sigma ** 2)
+        floor = self.detector.smallest_flux
+        if not np.isfinite(peak) or peak <= floor:
+            return self.TRUNCATE * sigma
+        return float(np.clip(sigma * np.sqrt(2.0 * np.log(peak / floor)),
+                             self.TRUNCATE * sigma, self.TRUNCATE_MAX * sigma))
+
     @staticmethod
     def pixel_gaussian(centre: float, low: int, high: int, sigma: float) -> ArrayLike:
         """
@@ -252,10 +334,9 @@ class Scene:
         # quantity being added to a bare array.
         intensities = u.Quantity(intensities[mask]).to_value(u.W / u.m ** 2)
         sigmas = self.psf_sigma(nx, ny)
-        truncate = 5.0
 
         for xi, yi, ii, si in zip(nx, ny, intensities, sigmas):
-            rad = int(np.ceil(truncate * si) + 1)
+            rad = int(np.ceil(self.truncation(ii, si)) + 1)
             xmin, xmax = max(0, int(np.floor(xi)) - rad), min(self.xres, int(np.floor(xi)) + rad + 1)
             ymin, ymax = max(0, int(np.floor(yi)) - rad), min(self.yres, int(np.floor(yi)) + rad + 1)
             if xmin >= xmax or ymin >= ymax:

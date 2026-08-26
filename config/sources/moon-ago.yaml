@@ -1,0 +1,11 @@
+# The sky over AGO and nothing else in it: an empty source list, so the renderer draws the stars, the
+# airglow and the Moon, and no meteor. Normally this file is what observe.py writes; there is no
+# schema on it, and `sources: []` is a perfectly good answer to "what was in the air".
+sources: []
+
+observer:
+  name: AGO
+  location:
+    latitude: 48.372763
+    longitude: 17.273933
+    altitude: 580.0

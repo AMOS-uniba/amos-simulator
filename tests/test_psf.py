@@ -5,6 +5,8 @@ Two things that were placeholders and said so. The width floored at half a pixel
 star inside one pixel where the grid decides its centroid; and a frame was one instant, so a meteor
 was a dot where a camera records a streak.
 """
+import itertools
+
 import numpy as np
 import pytest
 
@@ -170,3 +172,59 @@ class TestTheExposure:
         cx8, cy8, _, _ = moments(self.rendered(8).data)
         assert cx8 == pytest.approx(cx1, abs=0.05)
         assert cy8 == pytest.approx(cy1, abs=0.05)
+
+
+class TestHowFarASourceIsDrawn:
+    """
+    The truncation radius follows the brightness, which is what makes a saturated blob's size a
+    property of the source rather than of a constant in the code.
+    """
+    def test_a_faint_source_gets_the_floor(self):
+        s = scene()
+        assert s.truncation(1e-14, 1.5) == pytest.approx(s.TRUNCATE * 1.5)
+
+    def test_a_brighter_source_is_drawn_further(self):
+        s = scene()
+        radii = [s.truncation(flux, 1.5) for flux in (1e-6, 1e-3, 1.0, 1e3)]
+        assert radii == sorted(radii)
+        assert all(later > earlier for earlier, later in itertools.pairwise(radii))
+
+    def test_but_a_gaussian_hardly_grows_at_all(self):
+        """
+        The point worth knowing. The gibbous Moon reaches 5.8 sigma and the Sun, thirty million times
+        brighter, reaches 8.1 -- a factor of 3e7 in flux buys 1.4 in radius, because a Gaussian tail
+        falls as the exponential of the square. So a saturated blob's size barely depends on how
+        bright the source is, and bloom cannot be had from brightness alone with this PSF: a real halo
+        is scattered light in the optics and has a power-law wing.
+        """
+        s = scene()
+        moon = s.truncation(5.5e-5, 1.5) / 1.5              # the gibbous Moon, V = -9.3
+        sun = s.truncation(525.0, 1.5) / 1.5                # V = -26.7
+        assert moon == pytest.approx(5.84, abs=0.2)
+        assert sun == pytest.approx(8.14, abs=0.2)
+        assert sun < 1.5 * moon
+
+    def test_the_moon_makes_a_disc_a_dozen_pixels_across(self):
+        """
+        Half a degree at this plate scale is 4.4 pixels of Moon, which saturates by five orders of
+        magnitude, so what is drawn is a solid disc about fourteen pixels across: the disc, plus as
+        much of the PSF as can still light one pixel.
+        """
+        s = scene(psf={'fwhm_centre': 2.4, 'fwhm_edge': 3.6})
+        s.add_moon()
+        assert s.data.sum() > 0
+
+        lit = s.data >= s.detector.smallest_flux
+        width = lit.any(axis=0).sum()
+        assert 8 < width < 40, f"a disc {width} px across is not the Moon"
+
+    def test_and_all_of_its_light_is_on_the_frame(self):
+        """ Five hundred and twelve samples, each with its share, and nothing lost between them. """
+        s = scene()
+        s.add_moon()
+        from effects.sky import Moonlight
+        from effects import brightness
+        from astropy.coordinates import get_body
+        phase = get_body('moon', s.time, s.location).separation(get_body('sun', s.time, s.location))
+        assert s.data.sum() == pytest.approx(brightness.flux_from_magnitude(Moonlight.magnitude(phase)),
+                                             rel=1e-6)

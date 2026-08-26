@@ -88,10 +88,13 @@ class MeteorRenderer(Scalyca):
 
     def main(self):
         self.t0 = Time(self.config.start)
-        # The frame interval, from the camera rather than from a literal. It has to agree with the
-        # frame rate ffmpeg is given in the Makefile, and with the exposure the detector integrates
-        # over, so it is one number in one file.
-        self.dt = (1.0 / self.camera.detector.get('fps', 20)) * u.s
+        # The frame interval, from the camera rather than from a literal. `fps` for a video, because
+        # it has to agree with the frame rate ffmpeg is given in the Makefile; `interval` in seconds
+        # for a timelapse, because ten minutes between frames is easier to write than 1/600 of a
+        # frame per second and easier still to read.
+        interval = self.camera.detector.get('interval')
+        self.dt = (interval if interval else 1.0 / self.camera.detector.get('fps', 20)) * u.s
+        log.info(f"One frame every {self.dt}")
         self.times = self.t0 + np.arange(-self.camera.padding.start / self.dt,
                                          self.config.count + 1 + self.camera.padding.end / self.dt) * self.dt
 

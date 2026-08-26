@@ -31,10 +31,13 @@ from numpy.typing import ArrayLike
 #: energy of one photon in joules.
 HC = 1.98644586e-16
 
+#: The same camera `config/renderers/default.yaml` describes, so that a Scene built by hand -- a
+#: test, a notebook -- behaves like the renderer rather than like an earlier draft of it. The one
+#: difference is `glow`, which defaults to nothing: the intensifier's haze is a thing one asks for.
 DEFAULTS = dict(
-    aperture=3.6, qe=0.45, wavelength=550.0,
-    exposure=0.04, dark=1200.0, read_noise=8.0, bias=200.0, full_well=30000.0, bits=8,
-    gain=1.0, excess_noise=2.0, glow=0.0, glow_radius=70.0,
+    aperture=4.3, qe=0.20, wavelength=550.0,
+    exposure=0.04, dark=5.0, read_noise=200.0, bias=500.0, full_well=128000.0, bits=8,
+    gain=10000.0, excess_noise=2.0, glow=0.0, glow_radius=70.0,
 )
 
 log = logging.getLogger('root')
@@ -67,13 +70,25 @@ class Detector:
         """ The largest number the output can hold. """
         return 2 ** int(self.bits) - 1
 
+    @property
+    def smallest_flux(self) -> float:
+        """
+        The flux in one pixel that the output can just about tell from nothing: one count.
+
+        What a profile has to fall below before there is no point drawing it any further, which is
+        how far a saturated source spreads.
+        """
+        per_count = self.full_well / (self.saturation + 1) / max(self.gain, 1e-30)
+        return per_count * self.photon_energy / (self.area * self.exposure * self.qe)
+
     def photoelectrons(self, flux: ArrayLike) -> ArrayLike:
         """
         Photoelectrons collected from a flux in W/m2 over one exposure.
 
         This is the whole of what `Scene.gain = 1e13` used to assert. With the defaults a zeroth
-        magnitude star gives some 7e5 electrons in 40 ms, which is well past the full well -- as it
-        should be, since a bright star on a real AMOS frame is a saturated blob.
+        magnitude star gives 3561 photoelectrons in 40 ms, and since a pixel holds about thirteen of
+        them before the intensifier's gain fills the well, it saturates -- as it should, a bright
+        star on a real AMOS frame being a saturated blob.
         """
         return (np.asarray(flux, dtype=float) * self.area * self.exposure
                 * self.qe / self.photon_energy)

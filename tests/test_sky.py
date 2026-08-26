@@ -164,3 +164,27 @@ class TestTheTwoStages:
     def test_every_emission_is_one(self):
         for source in (Airglow, Moonlight):
             assert issubclass(source, Emission)
+
+
+class TestTheMoonAsABody:
+    """
+    The Moon itself, which is a different thing from its glow: the glow is what the air scatters
+    sideways, this is the light that came straight down the lens.
+    """
+    def test_the_phase_law_is_zero_at_full(self):
+        assert Moonlight.phase_law(0.0 * u.deg) == 0.0
+        assert Moonlight.magnitude(0.0 * u.deg) == pytest.approx(-12.73)
+
+    @pytest.mark.parametrize('phase, expected', [(45, -11.54), (90, -10.13), (110.776, -9.25)])
+    def test_and_it_fades_as_the_moon_wanes(self, phase, expected):
+        assert Moonlight.magnitude(phase * u.deg) == pytest.approx(expected, abs=0.01)
+
+    def test_the_two_zero_points_differ_by_the_unit_conversion(self):
+        """
+        The illuminance the scattering model wants and the magnitude of the body are the same phase
+        law with different zero points; if one is edited the other has to move with it.
+        """
+        for phase in (0.0, 60.0, 120.0):
+            magnitude = Moonlight.magnitude(phase * u.deg)
+            illuminance = Moonlight.illuminance(phase * u.deg)
+            assert -2.5 * np.log10(illuminance) - magnitude == pytest.approx(3.84 + 12.73, abs=1e-9)
